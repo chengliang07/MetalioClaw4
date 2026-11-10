@@ -296,6 +296,7 @@ bool PodcastPlayer::Start(const std::string& url, std::string& error) {
 
     std::lock_guard<std::mutex> api_lock(s_api_mutex);
     esp_asp_handle_t old_player = nullptr;
+    bool create_failed = false;
     {
         std::lock_guard<std::mutex> lock(s_player_mutex);
         const uint32_t generation =
@@ -312,16 +313,13 @@ bool PodcastPlayer::Start(const std::string& url, std::string& error) {
             delete arg;
             s_play_task = nullptr;
             error = "创建播放任务失败";
-            if (old_player != nullptr) {
-                esp_audio_simple_player_stop(old_player);
-            }
-            return false;
+            create_failed = true;
         }
     }
     if (old_player != nullptr) {
         esp_audio_simple_player_stop(old_player);
     }
-    return true;
+    return !create_failed;
 }
 
 bool PodcastPlayer::Pause() {
