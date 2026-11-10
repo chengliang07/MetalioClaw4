@@ -81,7 +81,10 @@ struct UiState {
     lv_obj_t* screen = nullptr;
     lv_obj_t* clock_row = nullptr;
     FlipDigit digits[kDigitCount]{};
+    lv_obj_t* time_lbl = nullptr;
     lv_obj_t* date_lbl = nullptr;
+    lv_obj_t* brand_lbl = nullptr;
+    lv_obj_t* wake_lbl = nullptr;
     lv_timer_t* update_timer = nullptr;
 
     lv_obj_t* charge_root = nullptr;
@@ -562,7 +565,7 @@ void MaybeTriggerChargeEffect(bool charging, int battery_level) {
 }
 
 void UpdateClockLabels() {
-    if (s_ui.date_lbl == nullptr || s_ui.clock_row == nullptr) {
+    if (s_ui.date_lbl == nullptr || s_ui.time_lbl == nullptr) {
         return;
     }
 
@@ -571,10 +574,11 @@ void UpdateClockLabels() {
     const bool have_time =
         localtime_r(&now, &tm_info) != nullptr && tm_info.tm_year >= 2025 - 1900;
 
-    char digits[7] = "000000";
     if (have_time) {
-        std::snprintf(digits, sizeof(digits), "%02d%02d%02d", tm_info.tm_hour,
-                      tm_info.tm_min, tm_info.tm_sec);
+        char time_str[8];
+        std::snprintf(time_str, sizeof(time_str), "%02d:%02d", tm_info.tm_hour,
+                      tm_info.tm_min);
+        lv_label_set_text(s_ui.time_lbl, time_str);
         const int wday = tm_info.tm_wday;
         const char* weekday =
             (wday >= 0 && wday < 7) ? I18n::T(kWeekdayMsgIds[wday]) : "-";
@@ -585,14 +589,10 @@ void UpdateClockLabels() {
                       tm_info.tm_mday, weekday);
         lv_label_set_text(s_ui.date_lbl, date_str);
     } else {
+        lv_label_set_text(s_ui.time_lbl, "--:--");
         lv_label_set_text(s_ui.date_lbl, I18n::T("----年--月--日 星期-"));
     }
 
-    // 首次铺底无动画，之后每位变化才翻页。
-    const bool animate = s_ui.clock_primed;
-    for (int i = 0; i < kDigitCount; ++i) {
-        FlipDigitSet(&s_ui.digits[i], digits[i], animate);
-    }
     s_ui.clock_primed = true;
 
     int battery_level = 0;
@@ -653,26 +653,60 @@ lv_obj_t* StandbyScreen::Create() {
 
     lv_obj_t* box = lv_obj_create(screen);
     lv_obj_remove_style_all(box);
-    lv_obj_set_size(box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_center(box);
+    lv_obj_set_size(box, kPanelSize, kPanelSize);
+    lv_obj_set_pos(box, 0, 0);
     lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(box, 28, LV_PART_MAIN);
-    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
 
-    s_ui.clock_row = CreateFlipClockRow(box);
+    lv_obj_t* brand_accent = lv_obj_create(box);
+    lv_obj_remove_style_all(brand_accent);
+    lv_obj_set_size(brand_accent, 56, 4);
+    lv_obj_set_style_radius(brand_accent, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(brand_accent, lv_color_hex(kChargeBlueSoft),
+                              LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(brand_accent, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_align(brand_accent, LV_ALIGN_TOP_MID, 0, 86);
+    lv_obj_remove_flag(brand_accent, LV_OBJ_FLAG_CLICKABLE);
+
+    s_ui.brand_lbl = lv_label_create(box);
+    lv_label_set_text(s_ui.brand_lbl, I18n::T("一丢 AI 学伴"));
+    lv_obj_set_style_text_color(s_ui.brand_lbl, lv_color_hex(0xDCEBFF),
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_font(s_ui.brand_lbl, &font_puhui_30_4,
+                               LV_PART_MAIN);
+    lv_obj_align(s_ui.brand_lbl, LV_ALIGN_TOP_MID, 0, 110);
+    lv_obj_remove_flag(s_ui.brand_lbl, LV_OBJ_FLAG_CLICKABLE);
+
+    s_ui.time_lbl = lv_label_create(box);
+    lv_label_set_text(s_ui.time_lbl, "--:--");
+    lv_obj_set_style_text_color(s_ui.time_lbl, lv_color_hex(0xF8FAFC),
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_font(s_ui.time_lbl, &font_puhui_number_120_4,
+                               LV_PART_MAIN);
+    lv_obj_set_style_text_align(s_ui.time_lbl, LV_TEXT_ALIGN_CENTER,
+                                LV_PART_MAIN);
+    lv_obj_align(s_ui.time_lbl, LV_ALIGN_CENTER, 0, -24);
+    lv_obj_remove_flag(s_ui.time_lbl, LV_OBJ_FLAG_CLICKABLE);
 
     s_ui.date_lbl = lv_label_create(box);
     lv_label_set_text(s_ui.date_lbl, I18n::T("----年--月--日 星期-"));
-    lv_obj_set_style_text_color(s_ui.date_lbl, lv_color_hex(0xE5E7EB),
+    lv_obj_set_style_text_color(s_ui.date_lbl, lv_color_hex(0x94A3B8),
                                 LV_PART_MAIN);
-    lv_obj_set_style_text_font(s_ui.date_lbl, &font_puhui_30_4, LV_PART_MAIN);
+    lv_obj_set_style_text_font(s_ui.date_lbl, &font_puhui_20_4, LV_PART_MAIN);
     lv_obj_set_style_text_align(s_ui.date_lbl, LV_TEXT_ALIGN_CENTER,
                                 LV_PART_MAIN);
+    lv_obj_align(s_ui.date_lbl, LV_ALIGN_CENTER, 0, 92);
     lv_obj_remove_flag(s_ui.date_lbl, LV_OBJ_FLAG_CLICKABLE);
+
+    s_ui.wake_lbl = lv_label_create(box);
+    lv_label_set_text(s_ui.wake_lbl, I18n::T("轻触屏幕唤醒"));
+    lv_obj_set_style_text_color(s_ui.wake_lbl, lv_color_hex(0x64748B),
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_font(s_ui.wake_lbl, &font_puhui_20_4,
+                               LV_PART_MAIN);
+    lv_obj_align(s_ui.wake_lbl, LV_ALIGN_BOTTOM_MID, 0, -34);
+    lv_obj_remove_flag(s_ui.wake_lbl, LV_OBJ_FLAG_CLICKABLE);
 
     UpdateClockLabels();
     s_ui.update_timer = lv_timer_create(OnClockTimer, 1000, nullptr);

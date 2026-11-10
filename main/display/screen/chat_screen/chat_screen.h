@@ -32,6 +32,10 @@ class ChatScreen {
     // 屏幕未加载时 no-op。
     static void AddMessage(const char* text, ChatMsgDir dir);
 
+    // 一轮 TTS 开始时重置助手气泡；后续 sentence_start 追加到同一气泡。
+    static void BeginAssistantRound();
+    static void AppendAssistantMessage(const char* text);
+
     // 清空消息列表（"清空" 按钮 / 外部调用）。
     static void ClearMessages();
 
