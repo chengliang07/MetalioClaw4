@@ -34,6 +34,7 @@
 #include "level_screen/level_screen.h"
 #include "magnet_screen/magnet_screen.h"
 #include "music_screen/music_screen.h"
+#include "podcast_screen/podcast_screen.h"
 #include "radio_screen/radio_screen.h"
 #include "recording_screen/recording_screen.h"
 #include "openclaw_screen/openclaw_screen.h"
@@ -211,6 +212,11 @@ void wifi_lifecycle_cb(screen_lifecycle_event_t event) {
 void chat_lifecycle_cb(screen_lifecycle_event_t event) {
     PwrKey_OnScreenLifecycle("chat", event);
     ChatScreen::LifecycleCallback(event);
+}
+
+void podcast_lifecycle_cb(screen_lifecycle_event_t event) {
+    PwrKey_OnScreenLifecycle("podcast", event);
+    PodcastScreen::LifecycleCallback(event);
 }
 
 void digital_people_lifecycle_cb(screen_lifecycle_event_t event) {
@@ -503,6 +509,16 @@ void LaunchWifi(screen_lifecycle_cb_t lifecycle_cb) {
 void LaunchChat(screen_lifecycle_cb_t lifecycle_cb) {
     lv_obj_t* old_scr = lv_screen_active();
     lv_obj_t* app = ChatScreen::Create();
+    screen_attach_lifecycle(app, lifecycle_cb);
+    lv_screen_load(app);
+    if (old_scr != nullptr && old_scr != app) {
+        lv_obj_delete_async(old_scr);
+    }
+}
+
+void LaunchPodcast(screen_lifecycle_cb_t lifecycle_cb) {
+    lv_obj_t* old_scr = lv_screen_active();
+    lv_obj_t* app = PodcastScreen::Create();
     screen_attach_lifecycle(app, lifecycle_cb);
     lv_screen_load(app);
     if (old_scr != nullptr && old_scr != app) {
@@ -809,34 +825,35 @@ void info_lifecycle_cb(screen_lifecycle_event_t event) {
 // 主题图标，资源 ic_app_home_themeN_magnet.spng 缺失时该格会显示为空。
 // name 存 zh-CN msgid（源文案）；显示时用 I18n::T(entry.name)。
 constexpr AppEntry kApps[] = {
-    {"chat",           "聊天",     LaunchChat,          chat_lifecycle_cb,          true},
+    {"chat",           "一丢学伴", LaunchChat,          chat_lifecycle_cb,          true},
+    {"radio",          "一丢播客", LaunchPodcast,       podcast_lifecycle_cb,       true},
     {"wifi",           "网络配置", LaunchWifi,          wifi_lifecycle_cb,          false},
-    {"digital_people", "数字人",   LaunchDigitalPeople, digital_people_lifecycle_cb, true},
-    {"call",           "电话",     LaunchCall,          call_lifecycle_cb,          false},
-    {"music",          "音乐",     LaunchMusic,         music_lifecycle_cb,         false},
-    {"calendar",       "日历",     LaunchCalendar,      calendar_lifecycle_cb,      false},
-    {"openclaw",       "OpenClaw", LaunchOpenClaw,      openclaw_lifecycle_cb,      true},
-    {"espclaw",        "ESPClaw",  LaunchEspClaw,       nullptr,                    false},
-    {"camera",         "相机",     LaunchCamera,        camera_lifecycle_cb,        false},
-    {"gps",            "定位",     LaunchGps,           gps_lifecycle_cb,           true},
-    {"spirit_level",   "水平仪",   LaunchLevel,         level_lifecycle_cb,         false},
-    {"magnet",         "磁场",     LaunchMagnet,        magnet_lifecycle_cb,        false},
-    {"vibrate",        "震动",     LaunchVibrate,       vibrate_lifecycle_cb,       false},
-    {"calculator",     "计算器",   LaunchCalculator,    calculator_lifecycle_cb,    false},
-    {"weather",        "天气",     LaunchWeather,       weather_lifecycle_cb,       true},
-    {"sd",             "SD卡",     LaunchSdCard,        sd_card_lifecycle_cb,       false},
-    {"pin",            "引脚测试", LaunchPinTest,       pin_test_lifecycle_cb,      false},
-    {"2048",           "2048",     LaunchGame2048,      game_2048_lifecycle_cb,     false},
-    {"info",           "系统信息", LaunchInfo,          info_lifecycle_cb,          false},
-    {"theme",          "主题",     LaunchTheme,         theme_lifecycle_cb,         false},
-    {"test",           "测试",     LaunchTest,          test_lifecycle_cb,          false},
     {"settings",       "设置",     LaunchSettings,      settings_lifecycle_cb,      false},
-    {"radio",          "电台",     LaunchRadio,         radio_lifecycle_cb,         true},
+    // {"digital_people", "数字人",   LaunchDigitalPeople, digital_people_lifecycle_cb, true},
+    // {"call",           "电话",     LaunchCall,          call_lifecycle_cb,          false},
+    // {"music",          "音乐",     LaunchMusic,         music_lifecycle_cb,         false},
+    // {"calendar",       "日历",     LaunchCalendar,      calendar_lifecycle_cb,      false},
+    // {"openclaw",       "OpenClaw", LaunchOpenClaw,      openclaw_lifecycle_cb,      true},
+    // {"espclaw",        "ESPClaw",  LaunchEspClaw,       nullptr,                    false},
+    // {"camera",         "相机",     LaunchCamera,        camera_lifecycle_cb,        false},
+    // {"gps",            "定位",     LaunchGps,           gps_lifecycle_cb,           true},
+    // {"spirit_level",   "水平仪",   LaunchLevel,         level_lifecycle_cb,         false},
+    // {"magnet",         "磁场",     LaunchMagnet,        magnet_lifecycle_cb,        false},
+    // {"vibrate",        "震动",     LaunchVibrate,       vibrate_lifecycle_cb,       false},
+    // {"calculator",     "计算器",   LaunchCalculator,    calculator_lifecycle_cb,    false},
+    // {"weather",        "天气",     LaunchWeather,       weather_lifecycle_cb,       true},
+    // {"sd",             "SD卡",     LaunchSdCard,        sd_card_lifecycle_cb,       false},
+    // {"pin",            "引脚测试", LaunchPinTest,       pin_test_lifecycle_cb,      false},
+    // {"2048",           "2048",     LaunchGame2048,      game_2048_lifecycle_cb,     false},
+    // {"info",           "系统信息", LaunchInfo,          info_lifecycle_cb,          false},
+    // {"theme",          "主题",     LaunchTheme,         theme_lifecycle_cb,         false},
+    // {"test",           "测试",     LaunchTest,          test_lifecycle_cb,          false},
+    // {"radio",          "电台",     LaunchRadio,         radio_lifecycle_cb,         true},
     // 录音本地可用；仅「录音转写」按钮需要联网（见 recording_screen）。
-    {"recording",      "录音",     LaunchRecording,     recording_lifecycle_cb,     false},
-    {"ai_image_gen",   "AI生图",   LaunchAiImageGen,    ai_image_gen_lifecycle_cb,  true},
-    {"translate",      "翻译",     LaunchTranslate,     translate_lifecycle_cb,     true},
-    {"secondary_screen", "副屏",   LaunchSecondaryScreen, secondary_screen_lifecycle_cb, false},
+    // {"recording",      "录音",     LaunchRecording,     recording_lifecycle_cb,     false},
+    // {"ai_image_gen",   "AI生图",   LaunchAiImageGen,    ai_image_gen_lifecycle_cb,  true},
+    // {"translate",      "翻译",     LaunchTranslate,     translate_lifecycle_cb,     true},
+    // {"secondary_screen", "副屏",   LaunchSecondaryScreen, secondary_screen_lifecycle_cb, false},
 };
 
 constexpr int kTotalApps = static_cast<int>(sizeof(kApps) / sizeof(kApps[0]));

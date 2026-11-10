@@ -234,8 +234,12 @@ void LVAdapterDisplay::SetChatMessage(const char* const role, const char* const 
         return;
     }
     if (chat_active) {
-        ChatScreen::AddMessage(content,
-                               is_user ? ChatMsgDir::Right : ChatMsgDir::Left);
+        if (std::strcmp(role, "assistant") == 0) {
+            ChatScreen::AppendAssistantMessage(content);
+        } else {
+            ChatScreen::AddMessage(content,
+                                   is_user ? ChatMsgDir::Right : ChatMsgDir::Left);
+        }
     } else {
         if (is_user) {
             DigitalPeopleScreen::ShowUserMessage(content);
@@ -243,6 +247,17 @@ void LVAdapterDisplay::SetChatMessage(const char* const role, const char* const 
             DigitalPeopleScreen::ShowSystemMessage(content);
         }
     }
+    esp_lv_adapter_unlock();
+}
+
+void LVAdapterDisplay::BeginAssistantRound() {
+    if (!ChatScreen::IsActive()) {
+        return;
+    }
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        return;
+    }
+    ChatScreen::BeginAssistantRound();
     esp_lv_adapter_unlock();
 }
 

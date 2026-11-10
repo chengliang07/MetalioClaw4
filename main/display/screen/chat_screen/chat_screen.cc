@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <sys/stat.h>
 
 #include "esp_log.h"
@@ -126,6 +127,19 @@ bool s_activation_dialog_shows_code = false;
 bool s_header_visible = true;
 // 本页是否已 Acquire 语音会话；leave 幂等，避免 swipe+UNLOAD+UNLOADED 三次 Release。
 bool s_voice_ui_held = false;
+
+// 当前 TTS 回答共用的助手气泡；每次 tts start 重置。
+lv_obj_t* s_assistant_row = nullptr;
+lv_obj_t* s_assistant_bubble = nullptr;
+lv_obj_t* s_assistant_label = nullptr;
+std::string s_assistant_text;
+
+void chat_reset_assistant_bubble() {
+    s_assistant_row = nullptr;
+    s_assistant_bubble = nullptr;
+    s_assistant_label = nullptr;
+    s_assistant_text.clear();
+}
 
 // 当前请求的情绪名；s_applied_emotion 记录已成功 set_src 的名字，避免重复加载。
 char s_current_emotion[kEmotionNameMax + 1] = "neutral";
@@ -365,11 +379,15 @@ void chat_trim_old_msgs() {
         if (oldest == nullptr) {
             break;
         }
+        if (oldest == s_assistant_row) {
+            chat_reset_assistant_bubble();
+        }
         lv_obj_delete(oldest);
     }
 }
 
 void chat_clear_msg_list() {
+    chat_reset_assistant_bubble();
     if (s_ui.msg_list == nullptr) {
         return;
     }
@@ -382,7 +400,25 @@ void chat_clear_msg_list() {
 // ---------------------------------------------------------------------------
 // 气泡构造（文字聊天列表）
 // ---------------------------------------------------------------------------
-void chat_create_bubble_row(const char* text, ChatMsgDir dir) {
+int32_t chat_bubble_width_for_text(const char* text, bool is_right) {
+    const lv_font_t* font = chat_font();
+    const int32_t max_bubble_w =
+        kPanelW * (is_right ? 72 : 90) / 100;
+    int32_t text_w = lv_txt_get_width(text, std::strlen(text), font, 0);
+    if (text_w < 24) {
+        text_w = 24;
+    }
+    int32_t bubble_w = text_w + kBubblePadX * 2;
+    if (bubble_w > max_bubble_w) {
+        bubble_w = max_bubble_w;
+    }
+    return bubble_w;
+}
+
+void chat_create_bubble_row(const char* text, ChatMsgDir dir,
+                            lv_obj_t** out_row = nullptr,
+                            lv_obj_t** out_bubble = nullptr,
+                            lv_obj_t** out_label = nullptr) {
     if (s_ui.msg_list == nullptr || text == nullptr) {
         return;
     }
@@ -407,15 +443,7 @@ void chat_create_bubble_row(const char* text, ChatMsgDir dir) {
     lv_obj_set_style_shadow_width(bubble, 0, LV_PART_MAIN);
     lv_obj_remove_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
 
-    const int32_t max_bubble_w = kPanelW * 72 / 100;
-    int32_t text_w = lv_txt_get_width(text, std::strlen(text), font, 0);
-    if (text_w < 24) {
-        text_w = 24;
-    }
-    int32_t bubble_w = text_w + kBubblePadX * 2;
-    if (bubble_w > max_bubble_w) {
-        bubble_w = max_bubble_w;
-    }
+    const int32_t bubble_w = chat_bubble_width_for_text(text, is_right);
     lv_obj_set_width(bubble, bubble_w);
 
     if (is_right) {
@@ -442,6 +470,15 @@ void chat_create_bubble_row(const char* text, ChatMsgDir dir) {
     lv_obj_set_height(bubble, LV_SIZE_CONTENT);
 
     screen_make_input_passive(row);
+    if (out_row != nullptr) {
+        *out_row = row;
+    }
+    if (out_bubble != nullptr) {
+        *out_bubble = bubble;
+    }
+    if (out_label != nullptr) {
+        *out_label = label;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -979,6 +1016,7 @@ void on_screen_unloaded(lv_event_t* e) {
     s_voice_ui_held = false;
     s_last_device_state = kDeviceStateUnknown;
     s_applied_emotion[0] = '\0';
+    chat_reset_assistant_bubble();
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,6 +1189,7 @@ lv_obj_t* ChatScreen::Create() {
         s_ui = UiState{};
         s_applied_emotion[0] = '\0';
         s_header_visible = true;
+        chat_reset_assistant_bubble();
     }
 
     s_activation_blocked = !is_device_activated();
@@ -1227,6 +1266,42 @@ void ChatScreen::AddMessage(const char* text, ChatMsgDir dir) {
     }
 
     chat_create_bubble_row(text, dir);
+    chat_trim_old_msgs();
+    chat_update_empty_hint();
+    if (s_view_mode == ViewMode::Chat) {
+        lv_obj_update_layout(s_ui.msg_list);
+        chat_scroll_to_latest(true);
+    } else {
+        ShowEmotionCaption(text);
+    }
+}
+
+void ChatScreen::BeginAssistantRound() {
+    chat_reset_assistant_bubble();
+}
+
+void ChatScreen::AppendAssistantMessage(const char* text) {
+    if (text == nullptr || text[0] == '\0' || !IsActive() ||
+        s_activation_blocked) {
+        return;
+    }
+
+    if (s_assistant_bubble == nullptr || s_assistant_label == nullptr) {
+        s_assistant_text = text;
+        chat_create_bubble_row(s_assistant_text.c_str(), ChatMsgDir::Left,
+                               &s_assistant_row, &s_assistant_bubble,
+                               &s_assistant_label);
+    } else {
+        s_assistant_text.append(text);
+        lv_label_set_text(s_assistant_label, s_assistant_text.c_str());
+        const int32_t bubble_w =
+            chat_bubble_width_for_text(s_assistant_text.c_str(), false);
+        lv_obj_set_width(s_assistant_bubble, bubble_w);
+        lv_obj_set_width(s_assistant_label, bubble_w - kBubblePadX * 2);
+        lv_obj_update_layout(s_assistant_label);
+        lv_obj_set_height(s_assistant_bubble, LV_SIZE_CONTENT);
+    }
+
     chat_trim_old_msgs();
     chat_update_empty_hint();
     if (s_view_mode == ViewMode::Chat) {
