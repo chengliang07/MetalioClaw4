@@ -100,8 +100,8 @@ const cJSON* FindPodcastArray(const cJSON* root) {
 bool LoadConfig(std::string& api_base, std::string& device_token,
                 std::string& error) {
     Settings settings(kSettingsNs, false);
-    api_base = TrimTrailingSlash(settings.GetString(kKeyApiBase, ""));
-    device_token = settings.GetString(kKeyDeviceToken, "");
+    api_base = TrimTrailingSlash(settings.GetString(kKeyApiBase, CONFIG_PODCAST_API_BASE));
+    device_token = settings.GetString(kKeyDeviceToken, CONFIG_PODCAST_DEVICE_TOKEN);
     if (api_base.empty() || device_token.empty()) {
         error = "播客服务未配置\n请联系管理员绑定设备";
         return false;

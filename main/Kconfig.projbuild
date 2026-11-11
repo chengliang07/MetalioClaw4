@@ -185,6 +185,18 @@ config SEND_WAKE_WORD_DATA
     help
         Send wake word data to the server as the first message of the conversation and wait for response
 
+config PODCAST_API_BASE
+    string "Podcast API Base"
+    default "https://yi-edu.com"
+    help
+        Base URL for the Yidu podcast device API, without a trailing slash.
+
+config PODCAST_DEVICE_TOKEN
+    string "Podcast Device Token"
+    default ""
+    help
+        Device token issued by the Yidu reading site. Leave empty to use NVS.
+
 config USE_AUDIO_PROCESSOR
     bool "Enable Audio Noise Reduction"
     default y

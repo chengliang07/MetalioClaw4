@@ -52,7 +52,7 @@ static const char* const STATE_STRINGS[] = {
 Application::Application() {
     event_group_ = xEventGroupCreate();
 
-    // 打断(AEC)默认关；开机后由 ApplyInterruptPreferenceFromNvs() 按 NVS 恢复
+    // 回声保护(AEC)默认关；开机后由 ApplyInterruptPreferenceFromNvs() 按 NVS 恢复
     aec_mode_ = kAecOff;
 
     esp_timer_create_args_t clock_timer_args = {
@@ -363,7 +363,7 @@ void Application::ToggleChatState() {
                 }
             }
 
-            SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
+            SetListeningMode(kListeningModeAutoStop);
         });
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
@@ -542,7 +542,7 @@ void Application::Start() {
     //加载唤醒词模型
     GetAudioService().SetModelsList(esp_srmodel_init("model"));
     GetAudioService().EnableWakeWordDetection(false);
-    // 模型就绪后再同步打断(AEC)偏好，避免处理器尚未初始化
+    // 模型就绪后再同步回声保护(AEC)偏好，避免处理器尚未初始化
     ApplyInterruptPreferenceFromNvs();
 
     // Initialize the protocol
@@ -795,15 +795,15 @@ void Application::OnWakeWordDetected() {
             protocol_->SendAudio(std::move(packet));
         }
         // Set the chat state to wake word detected
-        protocol_->SendWakeWordDetected("Hi 钛灵");
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
+        protocol_->SendWakeWordDetected(wake_word);
+        SetListeningMode(kListeningModeAutoStop);
 #else
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
+        SetListeningMode(kListeningModeAutoStop);
         // Play the pop up sound to indicate the wake word is detected
         audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
 #endif
     } else if (device_state_ == kDeviceStateSpeaking) {
-        AbortSpeaking(kAbortReasonWakeWordDetected);
+        // TTS 播放期间忽略唤醒词，避免扬声器回声触发自打断。
     } else if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
     }
@@ -873,12 +873,9 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
-            if (listening_mode_ != kListeningModeRealtime) {
-                audio_service_.EnableVoiceProcessing(false);
-                // Only AFE wake word can be detected in speaking mode
-                audio_service_.EnableWakeWordDetection(
-                    voice_ui_active_ && audio_service_.IsAfeWakeWord());
-            }
+            // 播放期间不监听唤醒词；打断开关只用于开启回声消除。
+            audio_service_.EnableVoiceProcessing(false);
+            audio_service_.EnableWakeWordDetection(false);
             audio_service_.ResetDecoder();
             break;
         default:
@@ -998,9 +995,9 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
         }
         // Set the chat state to wake word detected
         protocol_->SendWakeWordDetected(wake_word);
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
+        SetListeningMode(kListeningModeAutoStop);
 #else
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
+        SetListeningMode(kListeningModeAutoStop);
         // Play the pop up sound to indicate the wake word is detected
         audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
 #endif
@@ -1057,7 +1054,7 @@ void Application::SetAecMode(AecMode mode) {
 
     aec_mode_ = mode;
     {
-        // NVS 键最长 15 字符；interrupt 记忆「是否开启打断」
+        // NVS 键最长 15 字符；interrupt 记忆「是否开启回声保护」
         Settings settings("audio", true);
         settings.SetBool("interrupt", aec_mode_ != kAecOff);
     }
@@ -1083,11 +1080,11 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::ApplyInterruptPreferenceFromNvs() {
     Settings settings("audio");
-    // 无记录时默认关打断，避免上电即全双工
+    // 无记录时默认关回声保护，避免上电即全双工
     const bool interrupt_on = settings.GetBool("interrupt", false);
     aec_mode_ = interrupt_on ? kAecOnDeviceSide : kAecOff;
     audio_service_.EnableDeviceAec(interrupt_on);
-    ESP_LOGI(TAG, "interrupt preference: %s (device AEC)", interrupt_on ? "on" : "off");
+    ESP_LOGI(TAG, "echo protection preference: %s (device AEC)", interrupt_on ? "on" : "off");
 }
 
 void Application::PlaySound(const std::string_view& sound) {

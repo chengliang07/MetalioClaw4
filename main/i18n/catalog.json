@@ -391,13 +391,13 @@
     },
     {
       "key": "CHAT_INTERRUPT_ON",
-      "zh-CN": "打断：开",
-      "en-US": "Barge-in: On"
+      "zh-CN": "回声保护：开",
+      "en-US": "Echo cancel: On"
     },
     {
       "key": "CHAT_INTERRUPT_OFF",
-      "zh-CN": "打断：关",
-      "en-US": "Barge-in: Off"
+      "zh-CN": "回声保护：关",
+      "en-US": "Echo cancel: Off"
     },
     {
       "key": "PHONE",
@@ -2791,8 +2791,8 @@
     },
     {
       "key": "CHAT_HI",
-      "zh-CN": "快来和我聊天吧\n用 \"Hi 钛灵\" 唤醒我",
-      "en-US": "Come chat with me\nWake me with \"Hi Tai Ling\""
+      "zh-CN": "快来和我聊天吧\n用 \"一丢\" 唤醒我",
+      "en-US": "Come chat with me\nWake me with \"Yidiu\""
     },
     {
       "key": "SET_CONFIG_FAILED_ERR_D",

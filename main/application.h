@@ -133,7 +133,7 @@ private:
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
-    // 从 NVS 恢复「打断」偏好到 aec_mode_，并同步到音频处理器（开机静默，不弹通知）。
+    // 从 NVS 恢复「回声保护」偏好到 aec_mode_，并同步到音频处理器（开机静默，不弹通知）。
     void ApplyInterruptPreferenceFromNvs();
 };
 

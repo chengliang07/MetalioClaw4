@@ -506,7 +506,7 @@ void AudioService::EnableVoiceProcessing(bool enable) {
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
             audio_processor_initialized_ = true;
         }
-        // 每次启动都同步打断偏好，避免仅首次 init 后 AEC 状态漂移
+        // 每次启动都同步回声保护偏好，避免仅首次 init 后 AEC 状态漂移
         audio_processor_->EnableDeviceAec(device_aec_enabled_);
 
         /* We should make sure no audio is playing */

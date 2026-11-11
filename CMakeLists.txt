@@ -12,8 +12,9 @@ add_compile_options(-Wno-missing-field-initializers)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)
 
-# Override esp-sr packed model with custom wakeword when present
-if(EXISTS "${CMAKE_SOURCE_DIR}/wakeword/srmodels.bin")
+# Override esp-sr packed model with custom wakeword when present.
+# Custom wake word (Multinet) must keep the model built from sdkconfig.
+if(NOT CONFIG_USE_CUSTOM_WAKE_WORD AND EXISTS "${CMAKE_SOURCE_DIR}/wakeword/srmodels.bin")
     if(TARGET srmodels_bin)
         add_custom_target(custom_wakeword_srmodels ALL
             COMMAND ${CMAKE_COMMAND} -E copy

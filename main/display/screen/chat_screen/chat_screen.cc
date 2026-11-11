@@ -92,7 +92,7 @@ constexpr uint32_t kColorEmotionBubbleBg    = 0x000000;
 constexpr uint32_t kColorEmotionBubbleText  = 0xFFFFFF;
 constexpr lv_opa_t kEmotionBubbleBgOpa      = LV_OPA_40;
 
-constexpr const char kEmptyHint[] = "快来和我聊天吧\n用 \"Hi 钛灵\" 唤醒我";
+constexpr const char kEmptyHint[] = "快来和我聊天吧\n用 \"一丢\" 唤醒我";
 
 enum class ViewMode : uint8_t { Chat, Emotion };
 
@@ -775,7 +775,7 @@ void refresh_header_menu_selection() {
     style_menu_item(s_ui.menu_item_interrupt, interrupt_on);
     if (s_ui.menu_item_interrupt_lbl != nullptr) {
         lv_label_set_text(s_ui.menu_item_interrupt_lbl,
-                          interrupt_on ? I18n::T("打断：开") : I18n::T("打断：关"));
+                          interrupt_on ? I18n::T("回声保护：开") : I18n::T("回声保护：关"));
     }
 }
 
@@ -861,7 +861,7 @@ void on_interrupt_clicked() {
     auto& app = Application::GetInstance();
     const bool currently_on = app.GetAecMode() != kAecOff;
     const AecMode next = currently_on ? kAecOff : kAecOnDeviceSide;
-    ESP_LOGI(TAG, "interrupt -> %s", currently_on ? "off" : "on");
+    ESP_LOGI(TAG, "echo protection -> %s", currently_on ? "off" : "on");
     app.SetAecMode(next);
 }
 
@@ -967,7 +967,7 @@ void build_header_menu(lv_obj_t* parent) {
     s_ui.menu_item_chat =
         create_menu_item(s_ui.menu_panel, I18n::T("聊天"), MenuAction::Chat);
     s_ui.menu_item_interrupt =
-        create_menu_item(s_ui.menu_panel, I18n::T("打断：关"), MenuAction::Interrupt,
+        create_menu_item(s_ui.menu_panel, I18n::T("回声保护：关"), MenuAction::Interrupt,
                          &s_ui.menu_item_interrupt_lbl);
     s_ui.menu_item_clear =
         create_menu_item(s_ui.menu_panel, I18n::T("清空"), MenuAction::Clear);
