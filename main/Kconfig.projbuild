@@ -296,3 +296,7 @@ menu "Camera Configuration"
 endmenu
 
 endmenu
+
+config ESP_VIDEO_USE_CUSTOMIZED_ESP_H264_VERSION
+    bool "Use Customized esp_h264 Version"
+    default n
