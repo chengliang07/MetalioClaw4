@@ -877,7 +877,9 @@ void EnsureIconPathsBuilt() {
     for (int i = 0; i < kTotalApps; ++i) {
         std::snprintf(s_icon_paths[i], kIconPathBufSize,
                       "A:ic_app_home_theme%d_%s.spng",
-                      tid, kApps[i].icon_suffix);
+                      tid,
+                      kApps[i].icon_suffix != nullptr ? kApps[i].icon_suffix
+                                                      : "unknown");
     }
     s_built_theme_id = tid;
     built = true;
@@ -1662,11 +1664,15 @@ lv_obj_t* CreateStatusBar(lv_obj_t* screen, HomeStatusState* st) {
 }
 
 void HighlightDot(PagerState* state, int page) {
-    if (page < 0 || page >= state->page_count) {
+    if (state == nullptr || page < 0 || page >= state->page_count ||
+        state->indicator == nullptr) {
         return;
     }
     state->current_page = page;
     for (int i = 0; i < state->page_count; ++i) {
+        if (state->dots[i] == nullptr) {
+            continue;
+        }
         // Active dot is fully opaque, idle dots are subtle.  We keep both
         // the color the same so the row reads as a connected element.
         lv_opa_t opa = (i == page) ? LV_OPA_COVER : LV_OPA_40;
