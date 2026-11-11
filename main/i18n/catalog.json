@@ -391,13 +391,13 @@
     },
     {
       "key": "CHAT_INTERRUPT_ON",
-      "zh-CN": "回声保护：开",
-      "en-US": "Echo cancel: On"
+      "zh-CN": "打断：开",
+      "en-US": "Interrupt: On"
     },
     {
       "key": "CHAT_INTERRUPT_OFF",
-      "zh-CN": "回声保护：关",
-      "en-US": "Echo cancel: Off"
+      "zh-CN": "打断：关",
+      "en-US": "Interrupt: Off"
     },
     {
       "key": "PHONE",

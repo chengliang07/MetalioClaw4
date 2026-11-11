@@ -307,7 +307,11 @@ bool PodcastPlayer::Start(const std::string& url, std::string& error) {
 
         auto* arg = new PlayArg{};
         arg->generation = generation;
-        arg->url = url;
+        // 签名 URL 的 JWT token 含多个点，播放器用 strrchr(uri,'.') 判断扩展名会
+        // 取到 token 里的点，导致识别不到 mp3。追加无害参数让最后一个点落在 .mp3。
+        std::string play_url = url;
+        play_url += (play_url.find('?') == std::string::npos) ? "?f=.mp3" : "&f=.mp3";
+        arg->url = play_url;
         if (xTaskCreate(PodcastPlayTask, "podcast_play", 8192, arg, 5,
                         &s_play_task) != pdPASS) {
             delete arg;
