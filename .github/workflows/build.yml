@@ -134,25 +134,34 @@ jobs:
 
   publish-latest-release:
     name: Publish Latest release
-    if: github.event_name == 'push'
+    needs: [prepare, build]
+    if: github.event_name == 'push' && needs.build.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: xiaozhi_*_${{ github.sha }}.bin
+          path: firmware
 
       - name: Prepare release artifact
         id: artifact
         shell: bash
         run: |
-          if [[ ! -f Metalio_Claw4_Latest.bin ]]; then
-            echo "Metalio_Claw4_Latest.bin not found in repository" >&2
+          FIRMWARE="$(find firmware -name merged-binary.bin -print -quit)"
+          if [[ -z "$FIRMWARE" ]]; then
+            echo "merged-binary.bin not found in build artifact" >&2
             exit 1
           fi
           TIMESTAMP="$(TZ=Asia/Shanghai date +%Y%m%d_%H%M)"
           ARTIFACT="Metalio_Claw4_Latest_${TIMESTAMP}.bin"
-          cp Metalio_Claw4_Latest.bin "$ARTIFACT"
+          cp "$FIRMWARE" "$ARTIFACT"
           echo "path=$ARTIFACT" >> "$GITHUB_OUTPUT"
 
       - name: Prepare release title and notes from PR
