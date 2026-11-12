@@ -135,7 +135,11 @@ void ForcePoolRateCvt16k(esp_gmf_pool_handle_t pool) {
 // 这里改用 raw:// 输入，由本文件用 esp_http_client 直接拉流。
 struct HttpReader {
     esp_http_client_handle_t client = nullptr;
-    bool eof = false;
+    bool done = false;
+    std::string url;
+    int64_t remaining = -1;
+    int64_t fetched = 0;
+    int resumes = 0;
 };
 
 // open/fetch_headers 这套手动流程不会自动跟随 3xx，需要自己解析 Location。
@@ -158,7 +162,8 @@ std::string ResolveLocation(const std::string& base, const std::string& location
 }
 
 bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
-                     std::string& error) {
+                     std::string& error, int64_t range_start = 0,
+                     int64_t* remaining = nullptr) {
     client = nullptr;
     std::string current = url;
     for (int hop = 0; hop < 4; ++hop) {
@@ -172,6 +177,12 @@ bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
         if (client == nullptr) {
             error = "创建网络连接失败";
             return false;
+        }
+        if (range_start > 0) {
+            char range[40] = {};
+            snprintf(range, sizeof(range), "bytes=%lld-",
+                     static_cast<long long>(range_start));
+            esp_http_client_set_header(client, "Range", range);
         }
         if (esp_http_client_open(client, 0) != ESP_OK) {
             char detail[48] = {};
@@ -211,6 +222,18 @@ bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
             client = nullptr;
             return false;
         }
+        // 续传请求必须拿到 206，否则会从头重放，直接放弃续传。
+        if (range_start > 0 && status != 206) {
+            error = "音频续传失败";
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            client = nullptr;
+            return false;
+        }
+        if (remaining != nullptr) {
+            *remaining =
+                static_cast<int64_t>(esp_http_client_get_content_length(client));
+        }
         ESP_LOGI(TAG, "audio stream open, status=%d len=%d", status,
                  static_cast<int>(esp_http_client_get_content_length(client)));
         return true;
@@ -222,7 +245,7 @@ bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
 // 播放器要求每次尽量填满请求长度，短读会被当成流结束。
 int PodcastReadCallback(uint8_t* data, int data_size, void* ctx) {
     auto* reader = static_cast<HttpReader*>(ctx);
-    if (reader == nullptr || reader->client == nullptr || reader->eof ||
+    if (reader == nullptr || reader->client == nullptr || reader->done ||
         data == nullptr || data_size <= 0) {
         return 0;
     }
@@ -231,11 +254,37 @@ int PodcastReadCallback(uint8_t* data, int data_size, void* ctx) {
         const int ret = esp_http_client_read(
             reader->client, reinterpret_cast<char*>(data) + total,
             data_size - total);
-        if (ret <= 0) {
-            reader->eof = true;
-            break;
+        if (ret > 0) {
+            total += ret;
+            reader->fetched += ret;
+            if (reader->remaining > 0) {
+                reader->remaining -= ret;
+            }
+            continue;
         }
-        total += ret;
+        // 长节目经代理播放时，连接可能被中途断开；按已读字节续传。
+        if (reader->remaining > 0 && reader->resumes < 8) {
+            esp_http_client_close(reader->client);
+            esp_http_client_cleanup(reader->client);
+            reader->client = nullptr;
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_http_client_handle_t next = nullptr;
+            int64_t remaining = -1;
+            std::string error;
+            if (OpenAudioStream(reader->url, next, error, reader->fetched,
+                                &remaining)) {
+                reader->client = next;
+                reader->remaining = remaining;
+                reader->resumes++;
+                ESP_LOGW(TAG, "audio resumed at %lld (try %d)",
+                         static_cast<long long>(reader->fetched),
+                         reader->resumes);
+                continue;
+            }
+            ESP_LOGW(TAG, "audio resume failed: %s", error.c_str());
+        }
+        reader->done = true;
+        break;
     }
     return total;
 }
@@ -367,6 +416,9 @@ void PodcastPlayTask(void* arg) {
     }
     HttpReader reader;
     reader.client = client;
+    reader.url = url;
+    reader.remaining =
+        static_cast<int64_t>(esp_http_client_get_content_length(client));
 
     {
         esp_asp_cfg_t cfg = {
