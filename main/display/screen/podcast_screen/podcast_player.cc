@@ -12,7 +12,9 @@
 #include "esp_audio_simple_player.h"
 #include "esp_audio_simple_player_advance.h"
 #include "esp_crt_bundle.h"
+#include "esp_http_client.h"
 #include "esp_gmf_io_http.h"
+#include "esp_gmf_element.h"
 #include "esp_gmf_obj.h"
 #include "esp_gmf_pipeline.h"
 #include "esp_gmf_pool.h"
@@ -128,46 +130,72 @@ void ForcePoolRateCvt16k(esp_gmf_pool_handle_t pool) {
 #endif
 }
 
-esp_gmf_err_t HttpTlsGetScore(esp_gmf_io_handle_t handle, const char* url,
-                              int* score) {
-    (void)handle;
-    *score = ESP_GMF_IO_SCORE_NONE;
-    if (url == nullptr) {
-        return ESP_GMF_ERR_OK;
+// 不走 GMF 的 HTTP IO：播客是 https 签名地址，自带证书的 IO 与播放器池里
+// 默认的 "io_http" 同名，容易被换成不带证书的那个而握手失败。
+// 这里改用 raw:// 输入，由本文件用 esp_http_client 直接拉流。
+struct HttpReader {
+    esp_http_client_handle_t client = nullptr;
+    bool eof = false;
+};
+
+bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
+                     std::string& error) {
+    client = nullptr;
+    esp_http_client_config_t cfg = {};
+    cfg.url = url.c_str();
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.timeout_ms = 15000;
+    cfg.buffer_size = 4096;
+    cfg.buffer_size_tx = 1024;
+    client = esp_http_client_init(&cfg);
+    if (client == nullptr) {
+        error = "创建网络连接失败";
+        return false;
     }
-    if (strncasecmp(url, "http://", 7) == 0 ||
-        strncasecmp(url, "https://", 8) == 0) {
-        *score = ESP_GMF_IO_SCORE_STANDARD + 10;
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        char detail[48] = {};
+        snprintf(detail, sizeof(detail), "连接音频失败 %d",
+                 esp_http_client_get_errno(client));
+        error = detail;
+        esp_http_client_cleanup(client);
+        client = nullptr;
+        return false;
     }
-    return ESP_GMF_ERR_OK;
+    esp_http_client_fetch_headers(client);
+    const int status = esp_http_client_get_status_code(client);
+    if (status != 200 && status != 206) {
+        char detail[40] = {};
+        snprintf(detail, sizeof(detail), "音频 HTTP %d", status);
+        error = detail;
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        client = nullptr;
+        return false;
+    }
+    ESP_LOGI(TAG, "audio stream open, status=%d len=%d", status,
+             static_cast<int>(esp_http_client_get_content_length(client)));
+    return true;
 }
 
-bool RegisterHttpWithCertBundle(esp_asp_handle_t player) {
-    http_io_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_cfg.dir = ESP_GMF_IO_DIR_READER;
-    http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
-
-    esp_gmf_io_handle_t http_io = nullptr;
-    if (esp_gmf_io_http_init(&http_cfg, &http_io) != ESP_GMF_ERR_OK ||
-        http_io == nullptr) {
-        return false;
+// 播放器要求每次尽量填满请求长度，短读会被当成流结束。
+int PodcastReadCallback(uint8_t* data, int data_size, void* ctx) {
+    auto* reader = static_cast<HttpReader*>(ctx);
+    if (reader == nullptr || reader->client == nullptr || reader->eof ||
+        data == nullptr || data_size <= 0) {
+        return 0;
     }
-    // 播放器池里已自带一个 "io_http"（未挂证书 bundle）。同名时
-    // esp_gmf_pool_new_io 会取到先注册的那个，导致 https 握手直接失败。
-    // 这里用独立 tag，保证 pipeline 复制的是带证书的 IO。
-    if (esp_gmf_obj_set_tag(http_io, "io_http_tls") != ESP_GMF_ERR_OK) {
-        esp_gmf_obj_delete(http_io);
-        return false;
+    int total = 0;
+    while (total < data_size) {
+        const int ret = esp_http_client_read(
+            reader->client, reinterpret_cast<char*>(data) + total,
+            data_size - total);
+        if (ret <= 0) {
+            reader->eof = true;
+            break;
+        }
+        total += ret;
     }
-    // 与电台页保持一致：明确把 http(s) 地址交给 HTTP IO，
-    // 避免带查询串的签名地址被其它 IO 抢走。
-    reinterpret_cast<esp_gmf_io_t*>(http_io)->get_score = HttpTlsGetScore;
-    if (esp_audio_simple_player_register_io(player, http_io) !=
-        ESP_GMF_ERR_OK) {
-        esp_gmf_obj_delete(http_io);
-        return false;
-    }
-    return true;
+    return total;
 }
 
 int PodcastOutCallback(uint8_t* data, int data_size, void* ctx) {
@@ -212,7 +240,7 @@ int PodcastOutCallback(uint8_t* data, int data_size, void* ctx) {
     return 0;
 }
 
-int PodcastEventCallback(esp_asp_event_pkt_t* event, void* /*ctx*/) {
+int PodcastEventCallback(esp_asp_event_pkt_t* event, void* ctx) {
     if (event == nullptr) {
         return 0;
     }
@@ -238,7 +266,34 @@ int PodcastEventCallback(esp_asp_event_pkt_t* event, void* /*ctx*/) {
         } else if (state == ESP_ASP_STATE_PAUSED) {
             Emit(PodcastPlayerEvent::Paused, nullptr);
         } else if (state == ESP_ASP_STATE_ERROR) {
-            Emit(PodcastPlayerEvent::Error, "播放失败");
+            // 把报错的环节带到界面上，便于区分网络/解码/重采样。
+            const char* stage = "pipe";
+            esp_gmf_pipeline_handle_t pipe = nullptr;
+            if (ctx != nullptr &&
+                esp_audio_simple_player_get_pipeline(
+                    static_cast<esp_asp_handle_t>(ctx), &pipe) ==
+                    ESP_GMF_ERR_OK &&
+                pipe != nullptr) {
+                static const char* const kNames[] = {"aud_dec",
+                                                     "aud_rate_cvt"};
+                for (const char* name : kNames) {
+                    esp_gmf_element_handle_t el = nullptr;
+                    if (esp_gmf_pipeline_get_el_by_name(pipe, name, &el) !=
+                            ESP_GMF_ERR_OK ||
+                        el == nullptr) {
+                        continue;
+                    }
+                    esp_gmf_event_state_t el_state = ESP_GMF_EVENT_STATE_NONE;
+                    if (esp_gmf_element_get_state(el, &el_state) ==
+                            ESP_GMF_ERR_OK &&
+                        el_state == ESP_GMF_EVENT_STATE_ERROR) {
+                        stage = name;
+                    }
+                }
+            }
+            char detail[48] = {};
+            snprintf(detail, sizeof(detail), "播放失败@%s", stage);
+            Emit(PodcastPlayerEvent::Error, detail);
         }
     }
     return 0;
@@ -261,9 +316,19 @@ void PodcastPlayTask(void* arg) {
     s_pcm_channels.store(2, std::memory_order_relaxed);
     s_reported_playing.store(false, std::memory_order_relaxed);
 
+    esp_http_client_handle_t client = nullptr;
+    std::string stream_error;
+    if (!OpenAudioStream(url, client, stream_error)) {
+        Emit(PodcastPlayerEvent::Error, stream_error.c_str());
+        FinishPlayTask();
+        return;
+    }
+    HttpReader reader;
+    reader.client = client;
+
     {
         esp_asp_cfg_t cfg = {
-            .in = {},
+            .in = {.cb = PodcastReadCallback, .user_ctx = &reader},
             .out = {.cb = PodcastOutCallback, .user_ctx = codec},
             .task_prio = 5,
             .task_stack = 8 * 1024,
@@ -273,6 +338,8 @@ void PodcastPlayTask(void* arg) {
         esp_asp_handle_t player = nullptr;
         if (esp_audio_simple_player_new(&cfg, &player) != ESP_GMF_ERR_OK ||
             player == nullptr) {
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
             Emit(PodcastPlayerEvent::Error, "创建播放器失败");
             FinishPlayTask();
             return;
@@ -284,14 +351,8 @@ void PodcastPlayTask(void* arg) {
             ForcePoolRateCvt16k(pool);
         }
         ApplyRateCvt16k(player);
-        if (!RegisterHttpWithCertBundle(player)) {
-            esp_audio_simple_player_destroy(player);
-            Emit(PodcastPlayerEvent::Error, "初始化 HTTPS 播放失败");
-            FinishPlayTask();
-            return;
-        }
         esp_audio_simple_player_set_event(player, PodcastEventCallback,
-                                          nullptr);
+                                          player);
 
         bool cancelled = false;
         {
@@ -310,6 +371,8 @@ void PodcastPlayTask(void* arg) {
             }
         }
         if (cancelled) {
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
             FinishPlayTask();
             return;
         }
@@ -319,8 +382,11 @@ void PodcastPlayTask(void* arg) {
 
         ESP_LOGI(TAG, "start MP3 playback");
         const esp_gmf_err_t result =
-            esp_audio_simple_player_run_to_end(player, url.c_str(), nullptr);
+            esp_audio_simple_player_run_to_end(player, "raw://podcast.mp3",
+                                               nullptr);
         s_output_enabled.store(false, std::memory_order_release);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
 
         bool is_current = false;
         {
@@ -375,11 +441,7 @@ bool PodcastPlayer::Start(const std::string& url, std::string& error) {
 
         auto* arg = new PlayArg{};
         arg->generation = generation;
-        // 签名 URL 的 JWT token 含多个点，播放器用 strrchr(uri,'.') 判断扩展名会
-        // 取到 token 里的点，导致识别不到 mp3。追加无害参数让最后一个点落在 .mp3。
-        std::string play_url = url;
-        play_url += (play_url.find('?') == std::string::npos) ? "?f=.mp3" : "&f=.mp3";
-        arg->url = play_url;
+        arg->url = url;
         if (xTaskCreate(PodcastPlayTask, "podcast_play", 8192, arg, 5,
                         &s_play_task) != pdPASS) {
             delete arg;
