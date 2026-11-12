@@ -246,3 +246,8 @@ PodcastPlayInfo PodcastClient::ResolvePlayUrl(const std::string& podcast_id,
     result.ok = true;
     return result;
 }
+
+std::string PodcastClient::DeviceToken() {
+    Settings settings(kSettingsNs, false);
+    return settings.GetString(kKeyDeviceToken, CONFIG_PODCAST_DEVICE_TOKEN);
+}

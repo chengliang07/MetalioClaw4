@@ -16,4 +16,5 @@ public:
     static PodcastList FetchPodcasts(std::string& error);
     static PodcastPlayInfo ResolvePlayUrl(const std::string& podcast_id,
                                           std::string& error);
+    static std::string DeviceToken();
 };

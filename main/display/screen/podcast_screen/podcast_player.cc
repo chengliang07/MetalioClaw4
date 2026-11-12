@@ -12,6 +12,7 @@
 #include "esp_audio_simple_player.h"
 #include "esp_audio_simple_player_advance.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_gmf_io_http.h"
 #include "esp_gmf_element.h"
@@ -20,8 +21,11 @@
 #include "esp_gmf_pool.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "media_lib_adapter.h"
+#include "podcast_client.h"
 
 #ifdef CONFIG_ESP_AUDIO_SIMPLE_PLAYER_RESAMPLE_EN
 #include "esp_gmf_rate_cvt.h"
@@ -133,14 +137,35 @@ void ForcePoolRateCvt16k(esp_gmf_pool_handle_t pool) {
 // 不走 GMF 的 HTTP IO：播客是 https 签名地址，自带证书的 IO 与播放器池里
 // 默认的 "io_http" 同名，容易被换成不带证书的那个而握手失败。
 // 这里改用 raw:// 输入，由本文件用 esp_http_client 直接拉流。
-struct HttpReader {
-    esp_http_client_handle_t client = nullptr;
-    bool done = false;
-    std::string url;
-    int64_t remaining = -1;
-    int64_t fetched = 0;
-    int resumes = 0;
+// 音频先由独立任务预取到 PSRAM 环形缓冲，播放回调只从内存取数据，
+// 网络抖动不再直接变成断音。
+constexpr int kRingBlockSize = 16 * 1024;
+constexpr int kRingBlockCount = 96;  // 约 1.5MB
+constexpr size_t kRingBytes =
+    static_cast<size_t>(kRingBlockSize) * kRingBlockCount;
+
+struct RingBlock {
+    uint16_t index;
+    uint16_t size;
 };
+
+struct StreamState {
+    std::string url;
+    std::string error;
+    std::atomic<bool> stop{false};
+    std::atomic<bool> ended{false};
+    std::atomic<bool> open_ok{false};
+    SemaphoreHandle_t opened = nullptr;
+    TaskHandle_t task = nullptr;
+    int pending_index = -1;
+    int pending_size = 0;
+    int pending_offset = 0;
+};
+
+uint8_t* s_ring = nullptr;
+QueueHandle_t s_ring_free = nullptr;
+QueueHandle_t s_ring_data = nullptr;
+StreamState s_stream;
 
 // open/fetch_headers 这套手动流程不会自动跟随 3xx，需要自己解析 Location。
 std::string ResolveLocation(const std::string& base, const std::string& location) {
@@ -177,6 +202,12 @@ bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
         if (client == nullptr) {
             error = "创建网络连接失败";
             return false;
+        }
+        const std::string device_token = PodcastClient::DeviceToken();
+        if (!device_token.empty()) {
+            const std::string authorization = "Bearer " + device_token;
+            esp_http_client_set_header(client, "Authorization",
+                                       authorization.c_str());
         }
         if (range_start > 0) {
             char range[40] = {};
@@ -242,49 +273,160 @@ bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
     return false;
 }
 
+bool PrepareStreamBuffers() {
+    if (s_ring == nullptr) {
+        s_ring = static_cast<uint8_t*>(
+            heap_caps_malloc(kRingBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (s_ring == nullptr) {
+        return false;
+    }
+    if (s_ring_free == nullptr) {
+        s_ring_free = xQueueCreate(kRingBlockCount, sizeof(uint16_t));
+    }
+    if (s_ring_data == nullptr) {
+        s_ring_data = xQueueCreate(kRingBlockCount, sizeof(RingBlock));
+    }
+    if (s_ring_free == nullptr || s_ring_data == nullptr) {
+        return false;
+    }
+    uint16_t index = 0;
+    RingBlock block = {};
+    while (xQueueReceive(s_ring_free, &index, 0) == pdTRUE) {
+    }
+    while (xQueueReceive(s_ring_data, &block, 0) == pdTRUE) {
+    }
+    for (int i = 0; i < kRingBlockCount; ++i) {
+        const uint16_t value = static_cast<uint16_t>(i);
+        xQueueSend(s_ring_free, &value, 0);
+    }
+    return true;
+}
+
+void PodcastFetchTask(void* arg) {
+    auto* state = static_cast<StreamState*>(arg);
+    esp_http_client_handle_t client = nullptr;
+    int64_t remaining = -1;
+    std::string error;
+    if (!OpenAudioStream(state->url, client, error, 0, &remaining)) {
+        state->error = error;
+        state->ended.store(true);
+        xSemaphoreGive(state->opened);
+        state->task = nullptr;
+        vTaskDelete(nullptr);
+        return;
+    }
+    state->open_ok.store(true);
+    xSemaphoreGive(state->opened);
+
+    int64_t fetched = 0;
+    int resumes = 0;
+    while (!state->stop.load(std::memory_order_relaxed)) {
+        uint16_t index = 0;
+        if (xQueueReceive(s_ring_free, &index, pdMS_TO_TICKS(200)) != pdTRUE) {
+            continue;
+        }
+        uint8_t* dst = s_ring + static_cast<size_t>(index) * kRingBlockSize;
+        int got = 0;
+        bool stream_end = false;
+        while (got < kRingBlockSize &&
+               !state->stop.load(std::memory_order_relaxed)) {
+            const int ret = esp_http_client_read(
+                client, reinterpret_cast<char*>(dst) + got,
+                kRingBlockSize - got);
+            if (ret > 0) {
+                got += ret;
+                fetched += ret;
+                if (remaining > 0) {
+                    remaining -= ret;
+                }
+                continue;
+            }
+            // 长节目经代理播放时，连接可能被中途断开；按已读字节续传。
+            if (remaining > 0 && resumes < 8) {
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                client = nullptr;
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_http_client_handle_t next = nullptr;
+                int64_t next_remaining = -1;
+                std::string resume_error;
+                if (OpenAudioStream(state->url, next, resume_error, fetched,
+                                    &next_remaining)) {
+                    client = next;
+                    remaining = next_remaining;
+                    resumes++;
+                    ESP_LOGW(TAG, "audio resumed at %lld (try %d)",
+                             static_cast<long long>(fetched), resumes);
+                    continue;
+                }
+                ESP_LOGW(TAG, "audio resume failed: %s",
+                         resume_error.c_str());
+            }
+            stream_end = true;
+            break;
+        }
+        if (got > 0 && !state->stop.load(std::memory_order_relaxed)) {
+            RingBlock block = {index, static_cast<uint16_t>(got)};
+            if (xQueueSend(s_ring_data, &block, pdMS_TO_TICKS(2000)) !=
+                pdTRUE) {
+                xQueueSend(s_ring_free, &index, 0);
+            }
+        } else {
+            xQueueSend(s_ring_free, &index, 0);
+        }
+        if (stream_end) {
+            break;
+        }
+    }
+    if (client != nullptr) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+    }
+    state->ended.store(true);
+    state->task = nullptr;
+    vTaskDelete(nullptr);
+}
+
 // 播放器要求每次尽量填满请求长度，短读会被当成流结束。
 int PodcastReadCallback(uint8_t* data, int data_size, void* ctx) {
-    auto* reader = static_cast<HttpReader*>(ctx);
-    if (reader == nullptr || reader->client == nullptr || reader->done ||
-        data == nullptr || data_size <= 0) {
+    auto* state = static_cast<StreamState*>(ctx);
+    if (state == nullptr || data == nullptr || data_size <= 0) {
         return 0;
     }
     int total = 0;
     while (total < data_size) {
-        const int ret = esp_http_client_read(
-            reader->client, reinterpret_cast<char*>(data) + total,
-            data_size - total);
-        if (ret > 0) {
-            total += ret;
-            reader->fetched += ret;
-            if (reader->remaining > 0) {
-                reader->remaining -= ret;
-            }
-            continue;
-        }
-        // 长节目经代理播放时，连接可能被中途断开；按已读字节续传。
-        if (reader->remaining > 0 && reader->resumes < 8) {
-            esp_http_client_close(reader->client);
-            esp_http_client_cleanup(reader->client);
-            reader->client = nullptr;
-            vTaskDelay(pdMS_TO_TICKS(200));
-            esp_http_client_handle_t next = nullptr;
-            int64_t remaining = -1;
-            std::string error;
-            if (OpenAudioStream(reader->url, next, error, reader->fetched,
-                                &remaining)) {
-                reader->client = next;
-                reader->remaining = remaining;
-                reader->resumes++;
-                ESP_LOGW(TAG, "audio resumed at %lld (try %d)",
-                         static_cast<long long>(reader->fetched),
-                         reader->resumes);
+        if (state->pending_size <= 0) {
+            RingBlock block = {};
+            if (xQueueReceive(s_ring_data, &block,
+                              pdMS_TO_TICKS(500)) != pdTRUE) {
+                if (state->stop.load(std::memory_order_relaxed) ||
+                    state->ended.load(std::memory_order_relaxed)) {
+                    break;
+                }
                 continue;
             }
-            ESP_LOGW(TAG, "audio resume failed: %s", error.c_str());
+            state->pending_index = block.index;
+            state->pending_size = block.size;
+            state->pending_offset = 0;
         }
-        reader->done = true;
-        break;
+        int take = state->pending_size - state->pending_offset;
+        if (take > data_size - total) {
+            take = data_size - total;
+        }
+        std::memcpy(data + total,
+                    s_ring + static_cast<size_t>(state->pending_index) *
+                                 kRingBlockSize + state->pending_offset,
+                    static_cast<size_t>(take));
+        total += take;
+        state->pending_offset += take;
+        if (state->pending_offset >= state->pending_size) {
+            const uint16_t index =
+                static_cast<uint16_t>(state->pending_index);
+            xQueueSend(s_ring_free, &index, 0);
+            state->pending_size = 0;
+            state->pending_index = -1;
+        }
     }
     return total;
 }
@@ -407,22 +549,48 @@ void PodcastPlayTask(void* arg) {
     s_pcm_channels.store(2, std::memory_order_relaxed);
     s_reported_playing.store(false, std::memory_order_relaxed);
 
-    esp_http_client_handle_t client = nullptr;
-    std::string stream_error;
-    if (!OpenAudioStream(url, client, stream_error)) {
-        Emit(PodcastPlayerEvent::Error, stream_error.c_str());
+    // 上一轮预取任务可能还在收尾，先让它退出再复用缓冲。
+    for (int i = 0; i < 50 && s_stream.task != nullptr; ++i) {
+        s_stream.stop.store(true, std::memory_order_release);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!PrepareStreamBuffers()) {
+        Emit(PodcastPlayerEvent::Error, "音频缓冲不足");
         FinishPlayTask();
         return;
     }
-    HttpReader reader;
-    reader.client = client;
-    reader.url = url;
-    reader.remaining =
-        static_cast<int64_t>(esp_http_client_get_content_length(client));
+    s_stream.url = url;
+    s_stream.error.clear();
+    s_stream.stop.store(false, std::memory_order_release);
+    s_stream.ended.store(false, std::memory_order_release);
+    s_stream.open_ok.store(false, std::memory_order_release);
+    s_stream.pending_index = -1;
+    s_stream.pending_size = 0;
+    s_stream.pending_offset = 0;
+    if (s_stream.opened == nullptr) {
+        s_stream.opened = xSemaphoreCreateBinary();
+    }
+    if (s_stream.opened == nullptr ||
+        xTaskCreate(PodcastFetchTask, "podcast_fetch", 6144, &s_stream, 4,
+                    &s_stream.task) != pdPASS) {
+        Emit(PodcastPlayerEvent::Error, "创建预取任务失败");
+        FinishPlayTask();
+        return;
+    }
+    if (xSemaphoreTake(s_stream.opened, pdMS_TO_TICKS(20000)) != pdTRUE ||
+        !s_stream.open_ok.load(std::memory_order_relaxed)) {
+        s_stream.stop.store(true, std::memory_order_release);
+        s_stream.task = nullptr;
+        const std::string detail =
+            s_stream.error.empty() ? "连接音频超时" : s_stream.error;
+        Emit(PodcastPlayerEvent::Error, detail.c_str());
+        FinishPlayTask();
+        return;
+    }
 
     {
         esp_asp_cfg_t cfg = {
-            .in = {.cb = PodcastReadCallback, .user_ctx = &reader},
+            .in = {.cb = PodcastReadCallback, .user_ctx = &s_stream},
             .out = {.cb = PodcastOutCallback, .user_ctx = codec},
             .task_prio = 5,
             .task_stack = 8 * 1024,
@@ -432,8 +600,7 @@ void PodcastPlayTask(void* arg) {
         esp_asp_handle_t player = nullptr;
         if (esp_audio_simple_player_new(&cfg, &player) != ESP_GMF_ERR_OK ||
             player == nullptr) {
-            esp_http_client_close(client);
-            esp_http_client_cleanup(client);
+            s_stream.stop.store(true, std::memory_order_release);
             Emit(PodcastPlayerEvent::Error, "创建播放器失败");
             FinishPlayTask();
             return;
@@ -465,8 +632,7 @@ void PodcastPlayTask(void* arg) {
             }
         }
         if (cancelled) {
-            esp_http_client_close(client);
-            esp_http_client_cleanup(client);
+            s_stream.stop.store(true, std::memory_order_release);
             FinishPlayTask();
             return;
         }
@@ -479,8 +645,7 @@ void PodcastPlayTask(void* arg) {
             esp_audio_simple_player_run_to_end(player, "raw://podcast.mp3",
                                                nullptr);
         s_output_enabled.store(false, std::memory_order_release);
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
+        s_stream.stop.store(true, std::memory_order_release);
 
         bool is_current = false;
         {
@@ -597,6 +762,7 @@ void PodcastPlayer::Stop() {
     if (player != nullptr) {
         esp_audio_simple_player_stop(player);
     }
+    s_stream.stop.store(true, std::memory_order_release);
 }
 
 void PodcastPlayer::SetEventCallback(PodcastPlayerEventCallback callback,

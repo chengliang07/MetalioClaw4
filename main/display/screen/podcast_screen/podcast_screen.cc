@@ -290,11 +290,15 @@ void ApplyLoadResult(void* data) {
         return;
     }
     s_loading.store(false, std::memory_order_release);
-    s_items = std::move(result->items);
     if (!result->error.empty()) {
-        SetStatusDirect(result->error.c_str());
-        s_items.clear();
-    } else if (s_items.empty()) {
+        // 后台刷新失败时保留已有列表，不打断正在看的节目。
+        if (s_items.empty()) {
+            SetStatusDirect(result->error.c_str());
+        }
+        return;
+    }
+    s_items = std::move(result->items);
+    if (s_items.empty()) {
         SetStatusDirect(I18n::T("暂无节目"));
     } else {
         SetStatusDirect(I18n::T("选择节目开始收听"));
@@ -308,7 +312,9 @@ void StartLoadWorker() {
         return;
     }
     const uint32_t session = CurrentSession();
-    SetStatusDirect(I18n::T("正在加载节目..."));
+    if (s_items.empty()) {
+        SetStatusDirect(I18n::T("正在加载节目..."));
+    }
     auto* context = new LoadResult{};
     context->session = session;
     if (xTaskCreate(
@@ -441,7 +447,6 @@ void OnScreenUnloaded(lv_event_t* event) {
     s_request_generation.fetch_add(1, std::memory_order_acq_rel);
     PodcastPlayer::SetEventCallback(nullptr, nullptr);
     PodcastPlayer::Stop();
-    s_items.clear();
     s_current_title.clear();
     s_playing = false;
     s_paused = false;
@@ -545,6 +550,10 @@ void PodcastScreen::LifecycleCallback(screen_lifecycle_event_t event) {
         s_paused = false;
         PodcastPlayer::SetEventCallback(OnPlayerEvent, nullptr);
         UpdateControls(false, false);
+        if (!s_items.empty()) {
+            RebuildList();
+            SetStatusDirect(I18n::T("选择节目开始收听"));
+        }
         StartLoadWorker();
     } else {
         ESP_LOGI(TAG, "unload: podcast_screen");
