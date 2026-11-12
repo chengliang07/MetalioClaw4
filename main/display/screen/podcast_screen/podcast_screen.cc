@@ -323,9 +323,20 @@ void StartLoadWorker() {
                 std::string error;
                 result->items = PodcastClient::FetchPodcasts(error);
                 result->error = std::move(error);
+                std::vector<std::string> warm_ids;
+                for (size_t i = 0;
+                     i < result->items.size() && i < 3; ++i) {
+                    warm_ids.push_back(result->items[i].id);
+                }
                 if (lv_async_call(ApplyLoadResult, result) != LV_RESULT_OK) {
                     s_loading.store(false, std::memory_order_release);
                     delete result;
+                }
+                // 列表出来后在后台把前几个节目的播放地址取好，
+                // 用户点开时不必再等一次请求。
+                for (const auto& id : warm_ids) {
+                    std::string warm_error;
+                    PodcastClient::ResolvePlayUrl(id, warm_error);
                 }
                 vTaskDelete(nullptr);
             },

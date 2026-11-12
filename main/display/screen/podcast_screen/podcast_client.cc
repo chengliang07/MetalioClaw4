@@ -1,10 +1,12 @@
 #include "podcast_client.h"
 
 #include <cctype>
+#include <ctime>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "board.h"
 #include "cJSON.h"
@@ -21,6 +23,19 @@ constexpr const char* kKeyDeviceToken = "device_token";
 constexpr int kHttpTimeoutMs = 15000;
 
 std::mutex s_http_mutex;
+
+// 播放地址缓存：签名地址 60 分钟有效，这里保守缓存 45 分钟，
+// 点开节目时不必再等一次 /play 往返。
+constexpr int kPlayCacheSeconds = 45 * 60;
+
+struct PlayCacheEntry {
+    std::string id;
+    PodcastPlayInfo info;
+    time_t expires = 0;
+};
+
+std::mutex s_play_cache_mutex;
+std::vector<PlayCacheEntry> s_play_cache;
 
 std::string TrimTrailingSlash(std::string value) {
     while (!value.empty() && value.back() == '/') {
@@ -204,6 +219,15 @@ PodcastPlayInfo PodcastClient::ResolvePlayUrl(const std::string& podcast_id,
                                               std::string& error) {
     error.clear();
     PodcastPlayInfo result;
+    {
+        std::lock_guard<std::mutex> lock(s_play_cache_mutex);
+        const time_t now = time(nullptr);
+        for (const auto& entry : s_play_cache) {
+            if (entry.id == podcast_id && entry.expires > now) {
+                return entry.info;
+            }
+        }
+    }
     std::string api_base;
     std::string device_token;
     if (!LoadConfig(api_base, device_token, error)) {
@@ -244,6 +268,25 @@ PodcastPlayInfo PodcastClient::ResolvePlayUrl(const std::string& podcast_id,
         return result;
     }
     result.ok = true;
+    {
+        std::lock_guard<std::mutex> lock(s_play_cache_mutex);
+        const time_t expires = time(nullptr) + kPlayCacheSeconds;
+        bool replaced = false;
+        for (auto& entry : s_play_cache) {
+            if (entry.id == podcast_id) {
+                entry.info = result;
+                entry.expires = expires;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            if (s_play_cache.size() >= 8) {
+                s_play_cache.erase(s_play_cache.begin());
+            }
+            s_play_cache.push_back({podcast_id, result, expires});
+        }
+    }
     return result;
 }
 
