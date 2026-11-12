@@ -1,6 +1,7 @@
 #include "podcast_player.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -14,6 +15,7 @@
 #include "esp_gmf_io_http.h"
 #include "esp_gmf_obj.h"
 #include "esp_gmf_pipeline.h"
+#include "esp_gmf_pool.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -96,6 +98,50 @@ void ApplyRateCvt16k(esp_asp_handle_t player) {
 #endif
 }
 
+// 与电台页一致：在 pool 上把重采样目标固定为 16kHz。
+// 播放器建好 pipeline 后再查 "aud_rate_cvt" 往往查不到，
+// 44.1kHz 的 mp3 会按原采样率输出，导致播放异常。
+void ForcePoolRateCvt16k(esp_gmf_pool_handle_t pool) {
+#ifdef CONFIG_ESP_AUDIO_SIMPLE_PLAYER_RESAMPLE_EN
+    if (pool == nullptr) {
+        return;
+    }
+    const void* it = nullptr;
+    esp_gmf_element_handle_t el = nullptr;
+    while (esp_gmf_pool_iterate_element(pool, &it, &el) == ESP_GMF_ERR_OK) {
+        if (el == nullptr) {
+            continue;
+        }
+        const char* tag = OBJ_GET_TAG(el);
+        if (tag == nullptr || strcmp(tag, "aud_rate_cvt") != 0) {
+            continue;
+        }
+        esp_gmf_rate_cvt_set_dest_rate(el,
+                                       static_cast<uint32_t>(kOutputSampleRate));
+        auto* cfg = static_cast<esp_ae_rate_cvt_cfg_t*>(OBJ_GET_CFG(el));
+        if (cfg != nullptr) {
+            cfg->dest_rate = static_cast<uint32_t>(kOutputSampleRate);
+        }
+    }
+#else
+    (void)pool;
+#endif
+}
+
+esp_gmf_err_t HttpTlsGetScore(esp_gmf_io_handle_t handle, const char* url,
+                              int* score) {
+    (void)handle;
+    *score = ESP_GMF_IO_SCORE_NONE;
+    if (url == nullptr) {
+        return ESP_GMF_ERR_OK;
+    }
+    if (strncasecmp(url, "http://", 7) == 0 ||
+        strncasecmp(url, "https://", 8) == 0) {
+        *score = ESP_GMF_IO_SCORE_STANDARD + 10;
+    }
+    return ESP_GMF_ERR_OK;
+}
+
 bool RegisterHttpWithCertBundle(esp_asp_handle_t player) {
     http_io_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
     http_cfg.dir = ESP_GMF_IO_DIR_READER;
@@ -106,6 +152,9 @@ bool RegisterHttpWithCertBundle(esp_asp_handle_t player) {
         http_io == nullptr) {
         return false;
     }
+    // 与电台页保持一致：明确把 http(s) 地址交给 HTTP IO，
+    // 避免带查询串的签名地址被其它 IO 抢走。
+    reinterpret_cast<esp_gmf_io_t*>(http_io)->get_score = HttpTlsGetScore;
     if (esp_audio_simple_player_register_io(player, http_io) !=
         ESP_GMF_ERR_OK) {
         esp_gmf_obj_delete(http_io);
@@ -221,6 +270,12 @@ void PodcastPlayTask(void* arg) {
             FinishPlayTask();
             return;
         }
+        esp_gmf_pool_handle_t pool = nullptr;
+        if (esp_audio_simple_player_get_pool(player, &pool) ==
+                ESP_GMF_ERR_OK &&
+            pool != nullptr) {
+            ForcePoolRateCvt16k(pool);
+        }
         ApplyRateCvt16k(player);
         if (!RegisterHttpWithCertBundle(player)) {
             esp_audio_simple_player_destroy(player);
@@ -278,7 +333,13 @@ void PodcastPlayTask(void* arg) {
             if (result == ESP_GMF_ERR_OK) {
                 Emit(PodcastPlayerEvent::Finished, nullptr);
             } else {
-                Emit(PodcastPlayerEvent::Error, "播放中断");
+                char detail[48] = {};
+                snprintf(detail, sizeof(detail), "播放失败 0x%X",
+                         static_cast<unsigned>(result));
+                ESP_LOGE(TAG, "play failed, ret=0x%x url_len=%u",
+                         static_cast<unsigned>(result),
+                         static_cast<unsigned>(url.size()));
+                Emit(PodcastPlayerEvent::Error, detail);
             }
         }
     }
