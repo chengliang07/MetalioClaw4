@@ -499,7 +499,7 @@ void AudioService::ReleaseWakeWordEngine() {
     }
 }
 
-void AudioService::EnableVoiceProcessing(bool enable) {
+void AudioService::EnableVoiceProcessing(bool enable, bool reset_decoder) {
     ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
     if (enable) {
         if (!audio_processor_initialized_) {
@@ -509,8 +509,10 @@ void AudioService::EnableVoiceProcessing(bool enable) {
         // 每次启动都同步回声保护偏好，避免仅首次 init 后 AEC 状态漂移
         audio_processor_->EnableDeviceAec(device_aec_enabled_);
 
-        /* We should make sure no audio is playing */
-        ResetDecoder();
+        // 打断采集时播放仍在继续，不能清空 TTS 解码队列。
+        if (reset_decoder) {
+            ResetDecoder();
+        }
         audio_input_need_warmup_ = true;
         audio_processor_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);

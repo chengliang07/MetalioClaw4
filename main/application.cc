@@ -803,7 +803,12 @@ void Application::OnWakeWordDetected() {
         audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
 #endif
     } else if (device_state_ == kDeviceStateSpeaking) {
-        // TTS 播放期间忽略唤醒词，避免扬声器回声触发自打断。
+        // 打断开启时，播放中听到唤醒词立即停止本轮回答并进入聆听。
+        if (aec_mode_ == kAecOnDeviceSide) {
+            ESP_LOGI(TAG, "wake word during speaking, interrupt");
+            AbortSpeaking(kAbortReasonNone);
+            SetListeningMode(kListeningModeAutoStop);
+        }
     } else if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
     }
@@ -873,16 +878,15 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
-            // 打断开启时，播放期间保持 AEC 采集并监听唤醒词；
-            // 回声消除已去掉自播回声，不会自己打断自己。
+            // 打断开启时只运行通信 AFE（AEC 参考来自扬声器回采），
+            // 持续采集并上行，由服务端判断是否打断。
+            // 注意：不能再同时开启唤醒词 AFE，两套 AFE 常驻会重启；
+            // 也不能清空解码队列，否则本轮 TTS 会被直接掐断。
+            audio_service_.EnableWakeWordDetection(false);
             if (aec_mode_ == kAecOnDeviceSide) {
-                if (!audio_service_.IsAudioProcessorRunning()) {
-                    audio_service_.EnableVoiceProcessing(true);
-                }
-                audio_service_.EnableWakeWordDetection(true);
+                audio_service_.EnableVoiceProcessing(true, false);
             } else {
                 audio_service_.EnableVoiceProcessing(false);
-                audio_service_.EnableWakeWordDetection(false);
             }
             audio_service_.ResetDecoder();
             break;
@@ -1065,6 +1069,11 @@ void Application::SetAecMode(AecMode mode) {
         // NVS 键最长 15 字符；interrupt 记忆「是否开启回声保护」
         Settings settings("audio", true);
         settings.SetBool("interrupt", aec_mode_ != kAecOff);
+    }
+    // 只更新偏好，不在播放/聆听中重建 AFE；下一轮 EnableVoiceProcessing
+    // 会读取该偏好并应用。
+    if (!audio_service_.IsAudioProcessorRunning()) {
+        audio_service_.EnableDeviceAec(aec_mode_ == kAecOnDeviceSide);
     }
 
     Schedule([this]() {

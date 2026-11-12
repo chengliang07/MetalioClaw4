@@ -25,7 +25,9 @@ struct NvsWriteJob {
 
 QueueHandle_t s_write_queue = nullptr;
 StaticTask_t s_writer_tcb;
-StackType_t* s_writer_stack = nullptr;
+StaticQueue_t s_write_queue_cb;
+StackType_t s_writer_stack[3072];
+uint32_t s_write_queue_storage[12 * sizeof(NvsWriteJob*) / sizeof(uint32_t)];
 
 void NvsWriterTask(void* /*arg*/) {
     NvsWriteJob* job = nullptr;
@@ -52,15 +54,21 @@ void NvsWriterTask(void* /*arg*/) {
 QueueHandle_t GetWriteQueue() {
     static std::once_flag once;
     std::call_once(once, []() {
-        s_write_queue = xQueueCreate(12, sizeof(NvsWriteJob*));
-        if (s_write_queue != nullptr && s_writer_stack == nullptr) {
-            s_writer_stack = static_cast<StackType_t*>(heap_caps_malloc(
-                4096 * sizeof(StackType_t),
-                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        s_write_queue = xQueueCreateStatic(
+            12, sizeof(NvsWriteJob*),
+            reinterpret_cast<uint8_t*>(s_write_queue_storage),
+            &s_write_queue_cb);
+        if (s_write_queue == nullptr) {
+            ESP_LOGE(TAG, "create nvs write queue failed");
+            return;
         }
-        if (s_write_queue != nullptr && s_writer_stack != nullptr) {
-            xTaskCreateStatic(NvsWriterTask, "nvs_writer", 4096, nullptr, 5,
-                              s_writer_stack, &s_writer_tcb);
+        if (xTaskCreateStatic(NvsWriterTask, "nvs_writer",
+                              sizeof(s_writer_stack) / sizeof(StackType_t),
+                              nullptr, 5, s_writer_stack,
+                              &s_writer_tcb) == nullptr) {
+            ESP_LOGE(TAG, "create nvs writer task failed");
+            vQueueDelete(s_write_queue);
+            s_write_queue = nullptr;
         }
     });
     return s_write_queue;
@@ -71,6 +79,8 @@ void Settings::EnqueueWrite(
     const std::function<void(nvs_handle_t)>& fn) {
     QueueHandle_t queue = GetWriteQueue();
     if (queue == nullptr) {
+        ESP_LOGE(TAG, "nvs writer unavailable, drop write for %s",
+                 ns.c_str());
         return;
     }
     auto* job = new NvsWriteJob{ns, fn, xSemaphoreCreateBinary()};
@@ -78,16 +88,21 @@ void Settings::EnqueueWrite(
         delete job;
         return;
     }
-    if (xQueueSend(queue, &job, portMAX_DELAY) != pdTRUE) {
+    if (xQueueSend(queue, &job, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGE(TAG, "nvs write queue full, drop write for %s", ns.c_str());
         if (job->done != nullptr) {
             vSemaphoreDelete(job->done);
         }
         delete job;
         return;
     }
-    xSemaphoreTake(job->done, portMAX_DELAY);
-    vSemaphoreDelete(job->done);
-    delete job;
+    if (xSemaphoreTake(job->done, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        vSemaphoreDelete(job->done);
+        delete job;
+    } else {
+        // 写入任务可能仍在执行，不能释放 job；宁可泄漏也不要用后释放。
+        ESP_LOGE(TAG, "nvs write timeout for %s", ns.c_str());
+    }
 }
 
 Settings::Settings(const std::string& ns, bool read_write) : ns_(ns), read_write_(read_write) {

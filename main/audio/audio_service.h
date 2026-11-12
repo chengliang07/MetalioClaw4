@@ -109,7 +109,7 @@ public:
     // 销毁唤醒词 AFE/引擎（回桌面用）。Enable(false) 只是软停，内部任务仍可能占 CPU。
     void ReleaseWakeWordEngine();
     bool IsWakeWordEngineReady() const { return wake_word_initialized_; }
-    void EnableVoiceProcessing(bool enable);
+    void EnableVoiceProcessing(bool enable, bool reset_decoder = true);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
 

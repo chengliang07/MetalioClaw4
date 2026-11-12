@@ -49,7 +49,6 @@ std::atomic<uint32_t> s_generation{0};
 std::atomic<int> s_pcm_channels{2};
 std::atomic<bool> s_output_enabled{false};
 std::atomic<bool> s_reported_playing{false};
-std::atomic<bool> s_play_busy{false};
 std::atomic<uint32_t> s_output_generation{0};
 PodcastPlayerEventCallback s_event_cb = nullptr;
 void* s_event_ctx = nullptr;
@@ -84,34 +83,6 @@ void FinishPlayTask() {
         }
     }
     vTaskDelete(nullptr);
-}
-
-void StopCurrentPlayback(bool wait_for_exit) {
-    esp_asp_handle_t old_player = nullptr;
-    TaskHandle_t old_task = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(s_player_mutex);
-        s_generation.fetch_add(1, std::memory_order_acq_rel);
-        old_player = s_player;
-        s_player = nullptr;
-        old_task = s_play_task;
-        s_play_task = nullptr;
-        s_output_enabled.store(false, std::memory_order_release);
-        s_output_generation.store(
-            s_generation.load(std::memory_order_relaxed),
-            std::memory_order_release);
-    }
-    s_stream.stop.store(true, std::memory_order_release);
-    if (old_player != nullptr) {
-        esp_audio_simple_player_stop(old_player);
-    }
-    // 必须等旧 run_to_end 返回并 destroy，否则新歌和旧歌会同时 OutputData。
-    if (wait_for_exit && old_task != nullptr) {
-        for (int i = 0; i < 100 && s_play_busy.load(std::memory_order_relaxed);
-             ++i) {
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
-    }
 }
 
 void ApplyRateCvt16k(esp_asp_handle_t player) {
@@ -185,17 +156,70 @@ struct StreamState {
     std::atomic<bool> stop{false};
     std::atomic<bool> ended{false};
     std::atomic<bool> open_ok{false};
+    std::atomic<int> refs{1};
+    std::atomic<esp_http_client_handle_t> client{nullptr};
     SemaphoreHandle_t opened = nullptr;
     TaskHandle_t task = nullptr;
+    uint8_t* ring = nullptr;
+    QueueHandle_t ring_free = nullptr;
+    QueueHandle_t ring_data = nullptr;
     int pending_index = -1;
     int pending_size = 0;
     int pending_offset = 0;
 };
 
-uint8_t* s_ring = nullptr;
-QueueHandle_t s_ring_free = nullptr;
-QueueHandle_t s_ring_data = nullptr;
-StreamState s_stream;
+std::atomic<StreamState*> s_active_stream{nullptr};
+
+// 播放任务和预取任务各持有一份引用，谁最后退出谁释放。
+void ReleaseStreamState(StreamState* state) {
+    if (state == nullptr) {
+        return;
+    }
+    if (state->refs.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+        return;
+    }
+    if (state->opened != nullptr) {
+        vSemaphoreDelete(state->opened);
+    }
+    if (state->ring_data != nullptr) {
+        vQueueDelete(state->ring_data);
+    }
+    if (state->ring_free != nullptr) {
+        vQueueDelete(state->ring_free);
+    }
+    if (state->ring != nullptr) {
+        heap_caps_free(state->ring);
+    }
+    delete state;
+}
+
+// 只做“立刻静音 + 通知旧任务退出”，不等待。
+// 旧任务持有自己的流状态，退出前不会再输出；新播放可立即开始。
+void StopCurrentPlayback(bool /*wait_for_exit*/) {
+    esp_asp_handle_t old_player = nullptr;
+    StreamState* old_stream = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(s_player_mutex);
+        s_generation.fetch_add(1, std::memory_order_acq_rel);
+        old_player = s_player;
+        s_player = nullptr;
+        s_output_enabled.store(false, std::memory_order_release);
+        s_output_generation.store(0, std::memory_order_release);
+        old_stream = s_active_stream.exchange(nullptr);
+        if (old_stream != nullptr) {
+            old_stream->refs.fetch_add(1, std::memory_order_acq_rel);
+        }
+    }
+    if (old_player != nullptr) {
+        std::lock_guard<std::mutex> api_lock(s_api_mutex);
+        // 持有 player 时它一定还活着：旧任务的销毁也必须拿这把锁。
+        if (old_stream != nullptr) {
+            old_stream->stop.store(true, std::memory_order_release);
+        }
+        esp_audio_simple_player_stop(old_player);
+    }
+    ReleaseStreamState(old_stream);
+}
 
 // open/fetch_headers 这套手动流程不会自动跟随 3xx，需要自己解析 Location。
 std::string ResolveLocation(const std::string& base, const std::string& location) {
@@ -303,32 +327,32 @@ bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
     return false;
 }
 
-bool PrepareStreamBuffers() {
-    if (s_ring == nullptr) {
-        s_ring = static_cast<uint8_t*>(
+bool PrepareStreamBuffers(StreamState* state) {
+    if (state->ring == nullptr) {
+        state->ring = static_cast<uint8_t*>(
             heap_caps_malloc(kRingBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     }
-    if (s_ring == nullptr) {
+    if (state->ring == nullptr) {
         return false;
     }
-    if (s_ring_free == nullptr) {
-        s_ring_free = xQueueCreate(kRingBlockCount, sizeof(uint16_t));
+    if (state->ring_free == nullptr) {
+        state->ring_free = xQueueCreate(kRingBlockCount, sizeof(uint16_t));
     }
-    if (s_ring_data == nullptr) {
-        s_ring_data = xQueueCreate(kRingBlockCount, sizeof(RingBlock));
+    if (state->ring_data == nullptr) {
+        state->ring_data = xQueueCreate(kRingBlockCount, sizeof(RingBlock));
     }
-    if (s_ring_free == nullptr || s_ring_data == nullptr) {
+    if (state->ring_free == nullptr || state->ring_data == nullptr) {
         return false;
     }
     uint16_t index = 0;
     RingBlock block = {};
-    while (xQueueReceive(s_ring_free, &index, 0) == pdTRUE) {
+    while (xQueueReceive(state->ring_free, &index, 0) == pdTRUE) {
     }
-    while (xQueueReceive(s_ring_data, &block, 0) == pdTRUE) {
+    while (xQueueReceive(state->ring_data, &block, 0) == pdTRUE) {
     }
     for (int i = 0; i < kRingBlockCount; ++i) {
         const uint16_t value = static_cast<uint16_t>(i);
-        xQueueSend(s_ring_free, &value, 0);
+        xQueueSend(state->ring_free, &value, 0);
     }
     return true;
 }
@@ -342,10 +366,11 @@ void PodcastFetchTask(void* arg) {
         state->error = error;
         state->ended.store(true);
         xSemaphoreGive(state->opened);
-        state->task = nullptr;
+        ReleaseStreamState(state);
         vTaskDelete(nullptr);
         return;
     }
+    state->client.store(client, std::memory_order_release);
     state->open_ok.store(true);
     xSemaphoreGive(state->opened);
 
@@ -353,10 +378,12 @@ void PodcastFetchTask(void* arg) {
     int resumes = 0;
     while (!state->stop.load(std::memory_order_relaxed)) {
         uint16_t index = 0;
-        if (xQueueReceive(s_ring_free, &index, pdMS_TO_TICKS(200)) != pdTRUE) {
+        if (xQueueReceive(state->ring_free, &index, pdMS_TO_TICKS(200)) !=
+            pdTRUE) {
             continue;
         }
-        uint8_t* dst = s_ring + static_cast<size_t>(index) * kRingBlockSize;
+        uint8_t* dst =
+            state->ring + static_cast<size_t>(index) * kRingBlockSize;
         int got = 0;
         bool stream_end = false;
         while (got < kRingBlockSize &&
@@ -377,6 +404,7 @@ void PodcastFetchTask(void* arg) {
                 esp_http_client_close(client);
                 esp_http_client_cleanup(client);
                 client = nullptr;
+                state->client.store(nullptr, std::memory_order_release);
                 vTaskDelay(pdMS_TO_TICKS(200));
                 esp_http_client_handle_t next = nullptr;
                 int64_t next_remaining = -1;
@@ -384,6 +412,7 @@ void PodcastFetchTask(void* arg) {
                 if (OpenAudioStream(state->url, next, resume_error, fetched,
                                     &next_remaining)) {
                     client = next;
+                    state->client.store(client, std::memory_order_release);
                     remaining = next_remaining;
                     resumes++;
                     ESP_LOGW(TAG, "audio resumed at %lld (try %d)",
@@ -398,12 +427,12 @@ void PodcastFetchTask(void* arg) {
         }
         if (got > 0 && !state->stop.load(std::memory_order_relaxed)) {
             RingBlock block = {index, static_cast<uint16_t>(got)};
-            if (xQueueSend(s_ring_data, &block, pdMS_TO_TICKS(2000)) !=
+            if (xQueueSend(state->ring_data, &block, pdMS_TO_TICKS(2000)) !=
                 pdTRUE) {
-                xQueueSend(s_ring_free, &index, 0);
+                xQueueSend(state->ring_free, &index, 0);
             }
         } else {
-            xQueueSend(s_ring_free, &index, 0);
+            xQueueSend(state->ring_free, &index, 0);
         }
         if (stream_end) {
             break;
@@ -413,8 +442,9 @@ void PodcastFetchTask(void* arg) {
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
     }
+    state->client.store(nullptr, std::memory_order_release);
     state->ended.store(true);
-    state->task = nullptr;
+    ReleaseStreamState(state);
     vTaskDelete(nullptr);
 }
 
@@ -428,7 +458,7 @@ int PodcastReadCallback(uint8_t* data, int data_size, void* ctx) {
     while (total < data_size) {
         if (state->pending_size <= 0) {
             RingBlock block = {};
-            if (xQueueReceive(s_ring_data, &block,
+            if (xQueueReceive(state->ring_data, &block,
                               pdMS_TO_TICKS(500)) != pdTRUE) {
                 if (state->stop.load(std::memory_order_relaxed) ||
                     state->ended.load(std::memory_order_relaxed)) {
@@ -445,7 +475,7 @@ int PodcastReadCallback(uint8_t* data, int data_size, void* ctx) {
             take = data_size - total;
         }
         std::memcpy(data + total,
-                    s_ring + static_cast<size_t>(state->pending_index) *
+                    state->ring + static_cast<size_t>(state->pending_index) *
                                  kRingBlockSize + state->pending_offset,
                     static_cast<size_t>(take));
         total += take;
@@ -453,7 +483,7 @@ int PodcastReadCallback(uint8_t* data, int data_size, void* ctx) {
         if (state->pending_offset >= state->pending_size) {
             const uint16_t index =
                 static_cast<uint16_t>(state->pending_index);
-            xQueueSend(s_ring_free, &index, 0);
+            xQueueSend(state->ring_free, &index, 0);
             state->pending_size = 0;
             state->pending_index = -1;
         }
@@ -570,17 +600,36 @@ void PodcastPlayTask(void* arg) {
     const std::string url = play_arg->url;
     delete play_arg;
 
-    if (generation != s_generation.load(std::memory_order_acquire)) {
+    auto* state = new StreamState();
+    state->url = url;
+    state->opened = xSemaphoreCreateBinary();
+
+    auto is_current = [generation]() {
+        return generation == s_generation.load(std::memory_order_acquire);
+    };
+    // 放弃本次播放：先置停止位，再释放播放任务持有的引用。
+    auto abandon = [state](const char* detail) {
+        state->stop.store(true, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(s_player_mutex);
+            StreamState* expected = state;
+            s_active_stream.compare_exchange_strong(expected, nullptr);
+        }
+        if (detail != nullptr) {
+            Emit(PodcastPlayerEvent::Error, detail);
+        }
+        ReleaseStreamState(state);
         FinishPlayTask();
+    };
+
+    if (!is_current() || state->opened == nullptr) {
+        abandon(nullptr);
         return;
     }
-    s_play_busy.store(true, std::memory_order_relaxed);
 
     auto* codec = Board::GetInstance().GetAudioCodec();
     if (codec == nullptr) {
-        Emit(PodcastPlayerEvent::Error, "音频输出不可用");
-        s_play_busy.store(false, std::memory_order_relaxed);
-        FinishPlayTask();
+        abandon("音频输出不可用");
         return;
     }
 
@@ -588,55 +637,52 @@ void PodcastPlayTask(void* arg) {
     s_pcm_channels.store(2, std::memory_order_relaxed);
     s_reported_playing.store(false, std::memory_order_relaxed);
 
-    // 上一轮预取任务可能还在收尾，先让它退出再复用缓冲。
-    for (int i = 0; i < 50 && s_stream.task != nullptr; ++i) {
-        s_stream.stop.store(true, std::memory_order_release);
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    if (!PrepareStreamBuffers()) {
-        Emit(PodcastPlayerEvent::Error, "音频缓冲不足");
-        s_play_busy.store(false, std::memory_order_relaxed);
-        FinishPlayTask();
+    if (!PrepareStreamBuffers(state)) {
+        abandon("音频缓冲不足");
         return;
     }
-    s_stream.url = url;
-    s_stream.error.clear();
-    s_stream.stop.store(false, std::memory_order_release);
-    s_stream.ended.store(false, std::memory_order_release);
-    s_stream.open_ok.store(false, std::memory_order_release);
-    s_stream.pending_index = -1;
-    s_stream.pending_size = 0;
-    s_stream.pending_offset = 0;
-    if (s_stream.opened == nullptr) {
-        s_stream.opened = xSemaphoreCreateBinary();
-    }
-    if (s_stream.opened != nullptr) {
-        while (xSemaphoreTake(s_stream.opened, 0) == pdTRUE) {
+    {
+        std::lock_guard<std::mutex> lock(s_player_mutex);
+        if (is_current()) {
+            s_active_stream.store(state, std::memory_order_release);
         }
     }
-    if (s_stream.opened == nullptr ||
-        xTaskCreate(PodcastFetchTask, "podcast_fetch", 6144, &s_stream, 4,
-                    &s_stream.task) != pdPASS) {
-        Emit(PodcastPlayerEvent::Error, "创建预取任务失败");
-        s_play_busy.store(false, std::memory_order_relaxed);
-        FinishPlayTask();
+    if (!is_current()) {
+        abandon(nullptr);
         return;
     }
-    if (xSemaphoreTake(s_stream.opened, pdMS_TO_TICKS(20000)) != pdTRUE ||
-        !s_stream.open_ok.load(std::memory_order_relaxed)) {
-        s_stream.stop.store(true, std::memory_order_release);
-        s_stream.task = nullptr;
-        const std::string detail =
-            s_stream.error.empty() ? "连接音频超时" : s_stream.error;
-        Emit(PodcastPlayerEvent::Error, detail.c_str());
-        s_play_busy.store(false, std::memory_order_relaxed);
-        FinishPlayTask();
+
+    state->refs.fetch_add(1, std::memory_order_acq_rel);
+    if (xTaskCreate(PodcastFetchTask, "podcast_fetch", 6144, state, 4,
+                    &state->task) != pdPASS) {
+        state->refs.fetch_sub(1, std::memory_order_acq_rel);
+        abandon("创建预取任务失败");
+        return;
+    }
+    bool opened = false;
+    for (int i = 0; i < 400; ++i) {
+        if (!is_current()) {
+            break;
+        }
+        if (xSemaphoreTake(state->opened, pdMS_TO_TICKS(50)) == pdTRUE) {
+            opened = true;
+            break;
+        }
+    }
+    if (!opened || !state->open_ok.load(std::memory_order_acquire)) {
+        if (is_current()) {
+            const std::string detail =
+                state->error.empty() ? "连接音频超时" : state->error;
+            abandon(detail.c_str());
+        } else {
+            abandon(nullptr);
+        }
         return;
     }
 
     {
         esp_asp_cfg_t cfg = {
-            .in = {.cb = PodcastReadCallback, .user_ctx = &s_stream},
+            .in = {.cb = PodcastReadCallback, .user_ctx = state},
             .out = {.cb = PodcastOutCallback, .user_ctx = codec},
             .task_prio = 5,
             .task_stack = 8 * 1024,
@@ -646,10 +692,7 @@ void PodcastPlayTask(void* arg) {
         esp_asp_handle_t player = nullptr;
         if (esp_audio_simple_player_new(&cfg, &player) != ESP_GMF_ERR_OK ||
             player == nullptr) {
-            s_stream.stop.store(true, std::memory_order_release);
-            Emit(PodcastPlayerEvent::Error, "创建播放器失败");
-            s_play_busy.store(false, std::memory_order_relaxed);
-            FinishPlayTask();
+            abandon("创建播放器失败");
             return;
         }
         esp_gmf_pool_handle_t pool = nullptr;
@@ -667,10 +710,8 @@ void PodcastPlayTask(void* arg) {
             std::lock_guard<std::mutex> api_lock(s_api_mutex);
             {
                 std::lock_guard<std::mutex> lock(s_player_mutex);
-                if (generation !=
-                    s_generation.load(std::memory_order_relaxed)) {
-                    cancelled = true;
-                } else {
+                cancelled = !is_current();
+                if (!cancelled) {
                     s_player = player;
                 }
             }
@@ -679,9 +720,7 @@ void PodcastPlayTask(void* arg) {
             }
         }
         if (cancelled) {
-            s_stream.stop.store(true, std::memory_order_release);
-            s_play_busy.store(false, std::memory_order_relaxed);
-            FinishPlayTask();
+            abandon(nullptr);
             return;
         }
 
@@ -693,10 +732,13 @@ void PodcastPlayTask(void* arg) {
         const esp_gmf_err_t result =
             esp_audio_simple_player_run_to_end(player, "raw://podcast.mp3",
                                                nullptr);
-        s_output_enabled.store(false, std::memory_order_release);
-        s_stream.stop.store(true, std::memory_order_release);
+        if (s_output_generation.load(std::memory_order_acquire) ==
+            generation) {
+            s_output_enabled.store(false, std::memory_order_release);
+        }
+        state->stop.store(true, std::memory_order_release);
 
-        bool is_current = false;
+        bool still_current = false;
         {
             std::lock_guard<std::mutex> api_lock(s_api_mutex);
             {
@@ -704,13 +746,15 @@ void PodcastPlayTask(void* arg) {
                 if (s_player == player) {
                     s_player = nullptr;
                 }
-                is_current =
+                still_current =
                     generation == s_generation.load(std::memory_order_relaxed);
+                StreamState* expected = state;
+                s_active_stream.compare_exchange_strong(expected, nullptr);
             }
             esp_audio_simple_player_destroy(player);
         }
 
-        if (is_current) {
+        if (still_current) {
             if (result == ESP_GMF_ERR_OK) {
                 Emit(PodcastPlayerEvent::Finished, nullptr);
             } else {
@@ -724,7 +768,7 @@ void PodcastPlayTask(void* arg) {
             }
         }
     }
-    s_play_busy.store(false, std::memory_order_relaxed);
+    ReleaseStreamState(state);
     FinishPlayTask();
 }
 
@@ -737,15 +781,21 @@ bool PodcastPlayer::Start(const std::string& url, std::string& error) {
         return false;
     }
 
-    std::lock_guard<std::mutex> api_lock(s_api_mutex);
-    StopCurrentPlayback(true);
+    esp_asp_handle_t old_player = nullptr;
+    StreamState* old_stream = nullptr;
     bool create_failed = false;
     {
         std::lock_guard<std::mutex> lock(s_player_mutex);
         const uint32_t generation =
             s_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+        old_player = s_player;
         s_player = nullptr;
         s_output_enabled.store(false, std::memory_order_release);
+        s_output_generation.store(0, std::memory_order_release);
+        old_stream = s_active_stream.exchange(nullptr);
+        if (old_stream != nullptr) {
+            old_stream->refs.fetch_add(1, std::memory_order_acq_rel);
+        }
 
         auto* arg = new PlayArg{};
         arg->generation = generation;
@@ -758,6 +808,15 @@ bool PodcastPlayer::Start(const std::string& url, std::string& error) {
             create_failed = true;
         }
     }
+    // 先把旧播放的停止位打开，再停旧 player，避免出现两路同时出声。
+    if (old_player != nullptr) {
+        std::lock_guard<std::mutex> api_lock(s_api_mutex);
+        if (old_stream != nullptr) {
+            old_stream->stop.store(true, std::memory_order_release);
+        }
+        esp_audio_simple_player_stop(old_player);
+    }
+    ReleaseStreamState(old_stream);
     return !create_failed;
 }
 
@@ -796,7 +855,6 @@ bool PodcastPlayer::Resume() {
 }
 
 void PodcastPlayer::Stop() {
-    std::lock_guard<std::mutex> api_lock(s_api_mutex);
     StopCurrentPlayback(true);
 }
 
