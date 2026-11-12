@@ -1223,7 +1223,7 @@ void UpdateHomeStatusBar(HomeStatusState* st);
 
 int GetSavedNetworkType() {
     // 与 DualNetworkBoard / network_screen 共用 NVS 读取逻辑
-    constexpr int kDefaultNetType = 1;  // 默认 4G，与 metalio-claw-4 板级一致
+    constexpr int kDefaultNetType = 0;  // 默认 WiFi；整包刷机会清空 NVS，避免回落到 4G 卡住
     const NetworkType type =
         DualNetworkBoard::LoadNetworkTypeFromSettings(kDefaultNetType);
     return type == NetworkType::ML307 ? 1 : 0;
