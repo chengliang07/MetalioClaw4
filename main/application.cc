@@ -873,9 +873,17 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
-            // 播放期间不监听唤醒词；打断开关只用于开启回声消除。
-            audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(false);
+            // 打断开启时，播放期间保持 AEC 采集并监听唤醒词；
+            // 回声消除已去掉自播回声，不会自己打断自己。
+            if (aec_mode_ == kAecOnDeviceSide) {
+                if (!audio_service_.IsAudioProcessorRunning()) {
+                    audio_service_.EnableVoiceProcessing(true);
+                }
+                audio_service_.EnableWakeWordDetection(true);
+            } else {
+                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(false);
+            }
             audio_service_.ResetDecoder();
             break;
         default:
@@ -1065,6 +1073,11 @@ void Application::SetAecMode(AecMode mode) {
     Schedule([this]() {
         auto& board = Board::GetInstance();
         auto display = board.GetDisplay();
+        // 先释放空闲态唤醒词 AFE，再让语音处理任务切换 AEC，
+        // 避免两套 AFE 同时常驻导致 PSRAM/模型冲突重启。
+        audio_service_.EnableWakeWordDetection(false);
+        audio_service_.ReleaseWakeWordEngine();
+        audio_service_.EnableDeviceAec(aec_mode_ == kAecOnDeviceSide);
         if (aec_mode_ == kAecOnDeviceSide) {
             display->ShowNotification(Lang::Strings::RTC_MODE_ON);
         } else {
@@ -1074,6 +1087,9 @@ void Application::SetAecMode(AecMode mode) {
         // If the AEC mode is changed, close the audio channel
         if (protocol_ && protocol_->IsAudioChannelOpened()) {
             protocol_->CloseAudioChannel();
+        }
+        if (voice_ui_active_) {
+            audio_service_.EnableWakeWordDetection(true);
         }
     });
 }

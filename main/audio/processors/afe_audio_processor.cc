@@ -174,10 +174,12 @@ void AfeAudioProcessor::EnableDeviceAec(bool enable) {
         return;
     }
     if (enable) {
+        // VC 配置下 AEC 已在建实例时启用；动态 enable/disable 会重分配
+        // AFE 内部缓冲，在 P4 + PSRAM 上容易触发重启。
         afe_iface_->disable_vad(afe_data_);
-        afe_iface_->enable_aec(afe_data_);
     } else {
-        afe_iface_->disable_aec(afe_data_);
-        afe_iface_->enable_vad(afe_data_);
+        // 保留 AEC，关闭 VAD 即由上层按能量阈值决定是否上行音频，
+        // 不销毁回声参考通道，打断时才能继续采集。
+        afe_iface_->disable_vad(afe_data_);
     }
 }
