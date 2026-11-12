@@ -597,7 +597,9 @@ private:
     void InitializeNoLCD() { display_ = new NoDisplay(); }
 
 public:
-    METALIO_CLAW_4() : DualNetworkBoard(NT26_TX_PIN, NT26_RX_PIN, NT26_MRDY_PIN, NT26_SRDY_PIN, 1) {
+    // 默认 WiFi：整包刷机会清空 NVS，若默认 4G 会先初始化蜂窝模组并卡住，
+    // 且与首页/网络页的 WiFi 默认值不一致。
+    METALIO_CLAW_4() : DualNetworkBoard(NT26_TX_PIN, NT26_RX_PIN, NT26_MRDY_PIN, NT26_SRDY_PIN, 0) {
         InitializeI2C();
 
         InitializeIOExpander();
