@@ -1067,29 +1067,20 @@ void Application::SetAecMode(AecMode mode) {
         settings.SetBool("interrupt", aec_mode_ != kAecOff);
     }
 
-    // 同步写入偏好，避免 Schedule 前已按 Realtime 进聆听却尚未 EnableDeviceAec
-    audio_service_.EnableDeviceAec(aec_mode_ == kAecOnDeviceSide);
-
     Schedule([this]() {
         auto& board = Board::GetInstance();
         auto display = board.GetDisplay();
-        // 先释放空闲态唤醒词 AFE，再让语音处理任务切换 AEC，
-        // 避免两套 AFE 同时常驻导致 PSRAM/模型冲突重启。
-        audio_service_.EnableWakeWordDetection(false);
-        audio_service_.ReleaseWakeWordEngine();
-        audio_service_.EnableDeviceAec(aec_mode_ == kAecOnDeviceSide);
+        // 点击瞬间不创建/销毁 AFE：空闲态两套 AFE 同时常驻会硬复位。
+        // 偏好由下一次 EnableVoiceProcessing 时同步到通信 AFE。
         if (aec_mode_ == kAecOnDeviceSide) {
             display->ShowNotification(Lang::Strings::RTC_MODE_ON);
         } else {
             display->ShowNotification(Lang::Strings::RTC_MODE_OFF);
         }
 
-        // If the AEC mode is changed, close the audio channel
+        // 切换偏好后关闭长连接，下一轮重新建立聆听会话。
         if (protocol_ && protocol_->IsAudioChannelOpened()) {
             protocol_->CloseAudioChannel();
-        }
-        if (voice_ui_active_) {
-            audio_service_.EnableWakeWordDetection(true);
         }
     });
 }

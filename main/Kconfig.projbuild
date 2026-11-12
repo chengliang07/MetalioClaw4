@@ -187,13 +187,13 @@ config SEND_WAKE_WORD_DATA
 
 config PODCAST_API_BASE
     string "Podcast API Base"
-    default "https://yi-edu.com"
+    default "https://www.yi-edu.com"
     help
         Base URL for the Yidu podcast device API, without a trailing slash.
 
 config PODCAST_DEVICE_TOKEN
     string "Podcast Device Token"
-    default ""
+    default "2f8651538e9b1f1cc635af67fb1acf0ed11bfc8e105b7dc5c48976472ce05520"
     help
         Device token issued by the Yidu reading site. Leave empty to use NVS.
 

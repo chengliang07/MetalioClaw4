@@ -49,6 +49,8 @@ std::atomic<uint32_t> s_generation{0};
 std::atomic<int> s_pcm_channels{2};
 std::atomic<bool> s_output_enabled{false};
 std::atomic<bool> s_reported_playing{false};
+std::atomic<bool> s_play_busy{false};
+std::atomic<uint32_t> s_output_generation{0};
 PodcastPlayerEventCallback s_event_cb = nullptr;
 void* s_event_ctx = nullptr;
 std::vector<int16_t> s_pcm_buf;
@@ -82,6 +84,34 @@ void FinishPlayTask() {
         }
     }
     vTaskDelete(nullptr);
+}
+
+void StopCurrentPlayback(bool wait_for_exit) {
+    esp_asp_handle_t old_player = nullptr;
+    TaskHandle_t old_task = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(s_player_mutex);
+        s_generation.fetch_add(1, std::memory_order_acq_rel);
+        old_player = s_player;
+        s_player = nullptr;
+        old_task = s_play_task;
+        s_play_task = nullptr;
+        s_output_enabled.store(false, std::memory_order_release);
+        s_output_generation.store(
+            s_generation.load(std::memory_order_relaxed),
+            std::memory_order_release);
+    }
+    s_stream.stop.store(true, std::memory_order_release);
+    if (old_player != nullptr) {
+        esp_audio_simple_player_stop(old_player);
+    }
+    // 必须等旧 run_to_end 返回并 destroy，否则新歌和旧歌会同时 OutputData。
+    if (wait_for_exit && old_task != nullptr) {
+        for (int i = 0; i < 100 && s_play_busy.load(std::memory_order_relaxed);
+             ++i) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
 }
 
 void ApplyRateCvt16k(esp_asp_handle_t player) {
@@ -432,8 +462,10 @@ int PodcastReadCallback(uint8_t* data, int data_size, void* ctx) {
 }
 
 int PodcastOutCallback(uint8_t* data, int data_size, void* ctx) {
-    if (!s_output_enabled.load(std::memory_order_relaxed) || data == nullptr ||
-        data_size <= 0) {
+    if (!s_output_enabled.load(std::memory_order_acquire) ||
+        s_output_generation.load(std::memory_order_relaxed) !=
+            s_generation.load(std::memory_order_relaxed) ||
+        data == nullptr || data_size <= 0) {
         return 0;
     }
     auto* codec = static_cast<AudioCodec*>(ctx);
@@ -538,9 +570,16 @@ void PodcastPlayTask(void* arg) {
     const std::string url = play_arg->url;
     delete play_arg;
 
+    if (generation != s_generation.load(std::memory_order_acquire)) {
+        FinishPlayTask();
+        return;
+    }
+    s_play_busy.store(true, std::memory_order_relaxed);
+
     auto* codec = Board::GetInstance().GetAudioCodec();
     if (codec == nullptr) {
         Emit(PodcastPlayerEvent::Error, "音频输出不可用");
+        s_play_busy.store(false, std::memory_order_relaxed);
         FinishPlayTask();
         return;
     }
@@ -556,6 +595,7 @@ void PodcastPlayTask(void* arg) {
     }
     if (!PrepareStreamBuffers()) {
         Emit(PodcastPlayerEvent::Error, "音频缓冲不足");
+        s_play_busy.store(false, std::memory_order_relaxed);
         FinishPlayTask();
         return;
     }
@@ -578,6 +618,7 @@ void PodcastPlayTask(void* arg) {
         xTaskCreate(PodcastFetchTask, "podcast_fetch", 6144, &s_stream, 4,
                     &s_stream.task) != pdPASS) {
         Emit(PodcastPlayerEvent::Error, "创建预取任务失败");
+        s_play_busy.store(false, std::memory_order_relaxed);
         FinishPlayTask();
         return;
     }
@@ -588,6 +629,7 @@ void PodcastPlayTask(void* arg) {
         const std::string detail =
             s_stream.error.empty() ? "连接音频超时" : s_stream.error;
         Emit(PodcastPlayerEvent::Error, detail.c_str());
+        s_play_busy.store(false, std::memory_order_relaxed);
         FinishPlayTask();
         return;
     }
@@ -606,6 +648,7 @@ void PodcastPlayTask(void* arg) {
             player == nullptr) {
             s_stream.stop.store(true, std::memory_order_release);
             Emit(PodcastPlayerEvent::Error, "创建播放器失败");
+            s_play_busy.store(false, std::memory_order_relaxed);
             FinishPlayTask();
             return;
         }
@@ -637,11 +680,13 @@ void PodcastPlayTask(void* arg) {
         }
         if (cancelled) {
             s_stream.stop.store(true, std::memory_order_release);
+            s_play_busy.store(false, std::memory_order_relaxed);
             FinishPlayTask();
             return;
         }
 
         codec->EnableOutput(true);
+        s_output_generation.store(generation, std::memory_order_relaxed);
         s_output_enabled.store(true, std::memory_order_release);
 
         ESP_LOGI(TAG, "start MP3 playback");
@@ -679,6 +724,7 @@ void PodcastPlayTask(void* arg) {
             }
         }
     }
+    s_play_busy.store(false, std::memory_order_relaxed);
     FinishPlayTask();
 }
 
@@ -692,13 +738,12 @@ bool PodcastPlayer::Start(const std::string& url, std::string& error) {
     }
 
     std::lock_guard<std::mutex> api_lock(s_api_mutex);
-    esp_asp_handle_t old_player = nullptr;
+    StopCurrentPlayback(true);
     bool create_failed = false;
     {
         std::lock_guard<std::mutex> lock(s_player_mutex);
         const uint32_t generation =
             s_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
-        old_player = s_player;
         s_player = nullptr;
         s_output_enabled.store(false, std::memory_order_release);
 
@@ -712,9 +757,6 @@ bool PodcastPlayer::Start(const std::string& url, std::string& error) {
             error = "创建播放任务失败";
             create_failed = true;
         }
-    }
-    if (old_player != nullptr) {
-        esp_audio_simple_player_stop(old_player);
     }
     return !create_failed;
 }
@@ -755,18 +797,7 @@ bool PodcastPlayer::Resume() {
 
 void PodcastPlayer::Stop() {
     std::lock_guard<std::mutex> api_lock(s_api_mutex);
-    esp_asp_handle_t player = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(s_player_mutex);
-        s_generation.fetch_add(1, std::memory_order_acq_rel);
-        player = s_player;
-        s_player = nullptr;
-        s_output_enabled.store(false, std::memory_order_release);
-    }
-    if (player != nullptr) {
-        esp_audio_simple_player_stop(player);
-    }
-    s_stream.stop.store(true, std::memory_order_release);
+    StopCurrentPlayback(true);
 }
 
 void PodcastPlayer::SetEventCallback(PodcastPlayerEventCallback callback,

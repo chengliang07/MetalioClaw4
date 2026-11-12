@@ -1,50 +1,93 @@
 #include "settings.h"
 
 #include <functional>
+#include <mutex>
+#include <string>
 
-#include <esp_cpu.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
-#include <esp_memory_utils.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
 #include <nvs_flash.h>
 
 #define TAG "Settings"
 
-// NVS 写入会关闭 Cache 并访问 Flash，调用任务的栈必须在内部 RAM。
-// 部分组件任务（SDIO/4G 等）的栈在 PSRAM，直接写 NVS 会触发
-// spi_flash_disable_interrupts_caches_and_other_cpu 断言并重启。
-static void RunNvsWrite(const std::function<void()>& fn) {
-    if (esp_ptr_internal(esp_cpu_get_sp())) {
-        fn();
-        return;
-    }
+// NVS 写入会关闭 Cache 并访问 Flash；LVGL/其他组件的栈在 PSRAM 时
+// 直接写会触发 spi_flash_disable_interrupts_caches_and_other_cpu 断言。
+// 统一投递到内部 RAM 栈专用任务，且串行执行避免并发写 Flash。
+struct NvsWriteJob {
+    std::string ns;
+    std::function<void(nvs_handle_t)> fn;
+    SemaphoreHandle_t done;
+};
 
-    struct Job {
-        const std::function<void()>* fn;
-        SemaphoreHandle_t done;
-    };
-    Job job{&fn, xSemaphoreCreateBinary()};
-    if (job.done == nullptr) {
-        fn();
+QueueHandle_t s_write_queue = nullptr;
+StaticTask_t s_writer_tcb;
+StackType_t* s_writer_stack = nullptr;
+
+void NvsWriterTask(void* /*arg*/) {
+    NvsWriteJob* job = nullptr;
+    for (;;) {
+        if (xQueueReceive(s_write_queue, &job, portMAX_DELAY) != pdTRUE ||
+            job == nullptr) {
+            continue;
+        }
+        nvs_handle_t handle = 0;
+        if (nvs_open(job->ns.c_str(), NVS_READWRITE, &handle) == ESP_OK) {
+            job->fn(handle);
+            nvs_commit(handle);
+            nvs_close(handle);
+        }
+        if (job->done != nullptr) {
+            xSemaphoreGive(job->done);
+        } else {
+            delete job;
+        }
+        job = nullptr;
+    }
+}
+
+QueueHandle_t GetWriteQueue() {
+    static std::once_flag once;
+    std::call_once(once, []() {
+        s_write_queue = xQueueCreate(12, sizeof(NvsWriteJob*));
+        if (s_write_queue != nullptr && s_writer_stack == nullptr) {
+            s_writer_stack = static_cast<StackType_t*>(heap_caps_malloc(
+                4096 * sizeof(StackType_t),
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        }
+        if (s_write_queue != nullptr && s_writer_stack != nullptr) {
+            xTaskCreateStatic(NvsWriterTask, "nvs_writer", 4096, nullptr, 5,
+                              s_writer_stack, &s_writer_tcb);
+        }
+    });
+    return s_write_queue;
+}
+
+void Settings::EnqueueWrite(
+    const std::string& ns,
+    const std::function<void(nvs_handle_t)>& fn) {
+    QueueHandle_t queue = GetWriteQueue();
+    if (queue == nullptr) {
         return;
     }
-    BaseType_t created = xTaskCreate(
-        [](void* arg) {
-            auto* j = static_cast<Job*>(arg);
-            (*j->fn)();
-            xSemaphoreGive(j->done);
-            vTaskDelete(nullptr);
-        },
-        "nvs_write", 4096, &job, 5, nullptr);
-    if (created != pdPASS) {
-        vSemaphoreDelete(job.done);
-        fn();
+    auto* job = new NvsWriteJob{ns, fn, xSemaphoreCreateBinary()};
+    if (job->done == nullptr) {
+        delete job;
         return;
     }
-    xSemaphoreTake(job.done, portMAX_DELAY);
-    vSemaphoreDelete(job.done);
+    if (xQueueSend(queue, &job, portMAX_DELAY) != pdTRUE) {
+        if (job->done != nullptr) {
+            vSemaphoreDelete(job->done);
+        }
+        delete job;
+        return;
+    }
+    xSemaphoreTake(job->done, portMAX_DELAY);
+    vSemaphoreDelete(job->done);
+    delete job;
 }
 
 Settings::Settings(const std::string& ns, bool read_write) : ns_(ns), read_write_(read_write) {
@@ -53,10 +96,6 @@ Settings::Settings(const std::string& ns, bool read_write) : ns_(ns), read_write
 
 Settings::~Settings() {
     if (nvs_handle_ != 0) {
-        if (read_write_ && dirty_) {
-            nvs_handle_t handle = nvs_handle_;
-            RunNvsWrite([handle]() { ESP_ERROR_CHECK(nvs_commit(handle)); });
-        }
         nvs_close(nvs_handle_);
     }
 }
@@ -82,11 +121,9 @@ std::string Settings::GetString(const std::string& key, const std::string& defau
 
 void Settings::SetString(const std::string& key, const std::string& value) {
     if (read_write_) {
-        nvs_handle_t handle = nvs_handle_;
-        RunNvsWrite([handle, key, value]() {
-            ESP_ERROR_CHECK(nvs_set_str(handle, key.c_str(), value.c_str()));
+        EnqueueWrite(ns_, [key, value](nvs_handle_t handle) {
+            nvs_set_str(handle, key.c_str(), value.c_str());
         });
-        dirty_ = true;
     } else {
         ESP_LOGW(TAG, "Namespace %s is not open for writing", ns_.c_str());
     }
@@ -106,11 +143,9 @@ int32_t Settings::GetInt(const std::string& key, int32_t default_value) {
 
 void Settings::SetInt(const std::string& key, int32_t value) {
     if (read_write_) {
-        nvs_handle_t handle = nvs_handle_;
-        RunNvsWrite([handle, key, value]() {
-            ESP_ERROR_CHECK(nvs_set_i32(handle, key.c_str(), value));
+        EnqueueWrite(ns_, [key, value](nvs_handle_t handle) {
+            nvs_set_i32(handle, key.c_str(), value);
         });
-        dirty_ = true;
     } else {
         ESP_LOGW(TAG, "Namespace %s is not open for writing", ns_.c_str());
     }
@@ -130,11 +165,9 @@ bool Settings::GetBool(const std::string& key, bool default_value) {
 
 void Settings::SetBool(const std::string& key, bool value) {
     if (read_write_) {
-        nvs_handle_t handle = nvs_handle_;
-        RunNvsWrite([handle, key, value]() {
-            ESP_ERROR_CHECK(nvs_set_u8(handle, key.c_str(), value ? 1 : 0));
+        EnqueueWrite(ns_, [key, value](nvs_handle_t handle) {
+            nvs_set_u8(handle, key.c_str(), value ? 1 : 0);
         });
-        dirty_ = true;
     } else {
         ESP_LOGW(TAG, "Namespace %s is not open for writing", ns_.c_str());
     }
@@ -142,12 +175,9 @@ void Settings::SetBool(const std::string& key, bool value) {
 
 void Settings::EraseKey(const std::string& key) {
     if (read_write_) {
-        nvs_handle_t handle = nvs_handle_;
-        RunNvsWrite([handle, key]() {
+        EnqueueWrite(ns_, [key](nvs_handle_t handle) {
             auto ret = nvs_erase_key(handle, key.c_str());
-            if (ret != ESP_ERR_NVS_NOT_FOUND) {
-                ESP_ERROR_CHECK(ret);
-            }
+            (void)ret;
         });
     } else {
         ESP_LOGW(TAG, "Namespace %s is not open for writing", ns_.c_str());
@@ -156,8 +186,9 @@ void Settings::EraseKey(const std::string& key) {
 
 void Settings::EraseAll() {
     if (read_write_) {
-        nvs_handle_t handle = nvs_handle_;
-        RunNvsWrite([handle]() { ESP_ERROR_CHECK(nvs_erase_all(handle)); });
+        EnqueueWrite(ns_, [](nvs_handle_t handle) {
+            nvs_erase_all(handle);
+        });
     } else {
         ESP_LOGW(TAG, "Namespace %s is not open for writing", ns_.c_str());
     }
