@@ -138,43 +138,85 @@ struct HttpReader {
     bool eof = false;
 };
 
+// open/fetch_headers 这套手动流程不会自动跟随 3xx，需要自己解析 Location。
+std::string ResolveLocation(const std::string& base, const std::string& location) {
+    if (location.rfind("http://", 0) == 0 ||
+        location.rfind("https://", 0) == 0) {
+        return location;
+    }
+    const size_t scheme_end = base.find("://");
+    if (scheme_end == std::string::npos) {
+        return "";
+    }
+    const size_t host_end = base.find('/', scheme_end + 3);
+    const std::string origin =
+        host_end == std::string::npos ? base : base.substr(0, host_end);
+    if (!location.empty() && location[0] == '/') {
+        return origin + location;
+    }
+    return "";
+}
+
 bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
                      std::string& error) {
     client = nullptr;
-    esp_http_client_config_t cfg = {};
-    cfg.url = url.c_str();
-    cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    cfg.timeout_ms = 15000;
-    cfg.buffer_size = 4096;
-    cfg.buffer_size_tx = 1024;
-    client = esp_http_client_init(&cfg);
-    if (client == nullptr) {
-        error = "创建网络连接失败";
-        return false;
+    std::string current = url;
+    for (int hop = 0; hop < 4; ++hop) {
+        esp_http_client_config_t cfg = {};
+        cfg.url = current.c_str();
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+        cfg.timeout_ms = 15000;
+        cfg.buffer_size = 4096;
+        cfg.buffer_size_tx = 1024;
+        client = esp_http_client_init(&cfg);
+        if (client == nullptr) {
+            error = "创建网络连接失败";
+            return false;
+        }
+        if (esp_http_client_open(client, 0) != ESP_OK) {
+            char detail[48] = {};
+            snprintf(detail, sizeof(detail), "连接音频失败 %d",
+                     esp_http_client_get_errno(client));
+            error = detail;
+            esp_http_client_cleanup(client);
+            client = nullptr;
+            return false;
+        }
+        esp_http_client_fetch_headers(client);
+        const int status = esp_http_client_get_status_code(client);
+        if (status == 301 || status == 302 || status == 303 ||
+            status == 307 || status == 308) {
+            char* location = nullptr;
+            esp_http_client_get_header(client, "Location", &location);
+            const std::string next =
+                location == nullptr ? "" : ResolveLocation(current, location);
+            ESP_LOGI(TAG, "audio redirect %d -> %s", status,
+                     next.empty() ? "(none)" : next.c_str());
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            client = nullptr;
+            if (next.empty()) {
+                error = "音频地址跳转失败";
+                return false;
+            }
+            current = next;
+            continue;
+        }
+        if (status != 200 && status != 206) {
+            char detail[40] = {};
+            snprintf(detail, sizeof(detail), "音频 HTTP %d", status);
+            error = detail;
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            client = nullptr;
+            return false;
+        }
+        ESP_LOGI(TAG, "audio stream open, status=%d len=%d", status,
+                 static_cast<int>(esp_http_client_get_content_length(client)));
+        return true;
     }
-    if (esp_http_client_open(client, 0) != ESP_OK) {
-        char detail[48] = {};
-        snprintf(detail, sizeof(detail), "连接音频失败 %d",
-                 esp_http_client_get_errno(client));
-        error = detail;
-        esp_http_client_cleanup(client);
-        client = nullptr;
-        return false;
-    }
-    esp_http_client_fetch_headers(client);
-    const int status = esp_http_client_get_status_code(client);
-    if (status != 200 && status != 206) {
-        char detail[40] = {};
-        snprintf(detail, sizeof(detail), "音频 HTTP %d", status);
-        error = detail;
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        client = nullptr;
-        return false;
-    }
-    ESP_LOGI(TAG, "audio stream open, status=%d len=%d", status,
-             static_cast<int>(esp_http_client_get_content_length(client)));
-    return true;
+    error = "音频地址跳转过多";
+    return false;
 }
 
 // 播放器要求每次尽量填满请求长度，短读会被当成流结束。
