@@ -570,6 +570,10 @@ void PodcastPlayTask(void* arg) {
     if (s_stream.opened == nullptr) {
         s_stream.opened = xSemaphoreCreateBinary();
     }
+    if (s_stream.opened != nullptr) {
+        while (xSemaphoreTake(s_stream.opened, 0) == pdTRUE) {
+        }
+    }
     if (s_stream.opened == nullptr ||
         xTaskCreate(PodcastFetchTask, "podcast_fetch", 6144, &s_stream, 4,
                     &s_stream.task) != pdPASS) {
