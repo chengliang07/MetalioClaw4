@@ -152,6 +152,13 @@ bool RegisterHttpWithCertBundle(esp_asp_handle_t player) {
         http_io == nullptr) {
         return false;
     }
+    // 播放器池里已自带一个 "io_http"（未挂证书 bundle）。同名时
+    // esp_gmf_pool_new_io 会取到先注册的那个，导致 https 握手直接失败。
+    // 这里用独立 tag，保证 pipeline 复制的是带证书的 IO。
+    if (esp_gmf_obj_set_tag(http_io, "io_http_tls") != ESP_GMF_ERR_OK) {
+        esp_gmf_obj_delete(http_io);
+        return false;
+    }
     // 与电台页保持一致：明确把 http(s) 地址交给 HTTP IO，
     // 避免带查询串的签名地址被其它 IO 抢走。
     reinterpret_cast<esp_gmf_io_t*>(http_io)->get_score = HttpTlsGetScore;
