@@ -2791,8 +2791,8 @@
     },
     {
       "key": "CHAT_HI",
-      "zh-CN": "快来和我聊天吧\n用 \"一丢\" 唤醒我",
-      "en-US": "Come chat with me\nWake me with \"Yidiu\""
+      "zh-CN": "快来和我聊天吧\n用 \"你好一丢\" 唤醒我",
+      "en-US": "Come chat with me\nWake me with \"Hello Yidiu\""
     },
     {
       "key": "SET_CONFIG_FAILED_ERR_D",

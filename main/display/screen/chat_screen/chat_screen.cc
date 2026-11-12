@@ -92,7 +92,7 @@ constexpr uint32_t kColorEmotionBubbleBg    = 0x000000;
 constexpr uint32_t kColorEmotionBubbleText  = 0xFFFFFF;
 constexpr lv_opa_t kEmotionBubbleBgOpa      = LV_OPA_40;
 
-constexpr const char kEmptyHint[] = "快来和我聊天吧\n用 \"一丢\" 唤醒我";
+constexpr const char kEmptyHint[] = "快来和我聊天吧\n用 \"你好一丢\" 唤醒我";
 
 enum class ViewMode : uint8_t { Chat, Emotion };
 

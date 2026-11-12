@@ -91,14 +91,20 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     if (models_list == nullptr) {
         language_ = "cn";
         models_ = esp_srmodel_init("model");
-#ifdef CONFIG_CUSTOM_WAKE_WORD
-        threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
-        commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
-#endif
     } else {
         models_ = models_list;
         ParseWakenetModelConfig();
     }
+
+#ifdef CONFIG_CUSTOM_WAKE_WORD
+    // 正常启动时 application 会传入 model 分区模型列表，从而走 index.json 分支，
+    // 里面可能还是旧命令词（例如"你好小智"）。这里统一以编译期配置为准，
+    // 否则界面上显示"一丢"但实际叫不醒。
+    language_ = "cn";
+    threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
+    commands_.clear();
+    commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
+#endif
 
     if (models_ == nullptr || models_->num == -1) {
         ESP_LOGE(TAG, "Failed to initialize wakenet model");
