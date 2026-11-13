@@ -18,6 +18,8 @@ public:
     // 从当前屏幕打开播客，返回时回到同一个来源屏（学伴语音入口）。
     // 线程安全：内部投递到 LVGL 线程执行。
     static void RequestOpenPodcastFromCurrentScreen();
+    // 开机就绪后自动进入一丢学伴（等价于点击首页图标）。
+    static void RequestOpenChat();
     // 软件关机（UI / 空闲策略共用）。
     static void RequestSystemShutdown(const char* reason);
 

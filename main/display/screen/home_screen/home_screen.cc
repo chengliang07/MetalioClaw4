@@ -543,6 +543,10 @@ void OpenPodcastFromCurrentAsync(void* /*arg*/) {
     // 不删除来源屏：返回时必须回到同一个学伴页面。
 }
 
+void OpenChatAsync(void* /*arg*/) {
+    LaunchChat(chat_lifecycle_cb);
+}
+
 void LaunchDigitalPeople(screen_lifecycle_cb_t lifecycle_cb) {
     lv_obj_t* old_scr = lv_screen_active();
     lv_obj_t* app = DigitalPeopleScreen::Create();
@@ -2550,6 +2554,12 @@ void HomeScreen::SetIdleStandbyMinutes(int minutes) {
 void HomeScreen::RequestOpenPodcastFromCurrentScreen() {
     if (lv_async_call(OpenPodcastFromCurrentAsync, nullptr) != LV_RESULT_OK) {
         ESP_LOGW(TAG_HOME, "open podcast request dropped");
+    }
+}
+
+void HomeScreen::RequestOpenChat() {
+    if (lv_async_call(OpenChatAsync, nullptr) != LV_RESULT_OK) {
+        ESP_LOGW(TAG_HOME, "open chat request dropped");
     }
 }
 

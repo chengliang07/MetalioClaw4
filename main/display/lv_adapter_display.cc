@@ -175,6 +175,23 @@ void LVAdapterDisplay::SetupUI() {
                 if (old_scr != NULL && old_scr != home_scr) {
                     lv_obj_delete(old_scr);
                 }
+                // boot_ready 后自动进入一丢学伴（等同点击首页图标）。
+                // 不在启动定时器里直接建 ChatScreen：此前会在 SD/资源就绪前
+                // 创建导致重启循环，这里等应用流水线完成后再切换。
+                lv_timer_t* auto_chat = lv_timer_create(
+                    [](lv_timer_t* t) {
+                        if (!Application::GetInstance().IsBootReady()) {
+                            return;
+                        }
+                        lv_obj_t* home = static_cast<lv_obj_t*>(lv_timer_get_user_data(t));
+                        lv_timer_delete(t);
+                        if (lv_screen_active() != home) {
+                            return;
+                        }
+                        HomeScreen::RequestOpenChat();
+                    },
+                    300, home_scr);
+                lv_timer_set_repeat_count(auto_chat, -1);
                 esp_lv_adapter_unlock();
             }
 
