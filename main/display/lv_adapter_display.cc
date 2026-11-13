@@ -170,7 +170,9 @@ void LVAdapterDisplay::SetupUI() {
             lv_obj_t* old_scr = lv_screen_active();
 
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
-                lv_obj_t* home_scr = HomeScreen::Create();
+                // 开机默认进入「一丢学伴」对话页（带表情/字幕），而非 launcher。
+                // 对话页自带「返回」按钮 → 回到 launcher，不会把用户困在首页外。
+                lv_obj_t* home_scr = ChatScreen::Create();
                 lv_screen_load(home_scr);
                 if (old_scr != NULL && old_scr != home_scr) {
                     lv_obj_delete(old_scr);
