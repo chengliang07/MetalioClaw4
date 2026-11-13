@@ -873,12 +873,12 @@ void Application::SetDeviceState(DeviceState state) {
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
             break;
-        case kDeviceStateListening:
+        case kDeviceStateListening: {
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
             audio_service_.SetBargeInActive(false);
 
-            // 从 Speaking（本地打断）进入 Listening 时 AFE 已在小跑，
+            // 从 Speaking（本地打断）进入 Listening 时 AFE 已在运行，
             // 仍需补发 listen start，否则服务端不会开始接收本轮语音。
             bool need_start_listening = (previous_state == kDeviceStateSpeaking);
             if (!audio_service_.IsAudioProcessorRunning()) {
@@ -890,6 +890,7 @@ void Application::SetDeviceState(DeviceState state) {
                 protocol_->SendStartListening(listening_mode_);
             }
             break;
+        }
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
