@@ -736,7 +736,6 @@ void Application::Start() {
     // 启动流水线完成（联网/OTA/激活/协议）后才标记就绪；勿把 starting 或中途 Idle 当已激活
     boot_ready_ = true;
     SetDeviceState(kDeviceStateIdle);
-    audio_service_.EnableWakeWordDetection(false);
 
     has_server_time_ = ota.HasServerTime();
     if (protocol_started) {

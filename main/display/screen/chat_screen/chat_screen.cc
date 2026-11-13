@@ -121,7 +121,8 @@ struct UiState {
 
 UiState s_ui;
 DeviceState s_last_device_state = kDeviceStateUnknown;
-ViewMode s_view_mode = ViewMode::Chat;
+// 开机直达学伴时默认展示表情页（用户可在菜单切回文字气泡）。
+ViewMode s_view_mode = ViewMode::Emotion;
 bool s_activation_blocked = false;
 bool s_activation_dialog_shows_code = false;
 bool s_header_visible = true;
