@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
+#include "home_screen/home_screen.h"
 
 #define TAG "MCP"
 
@@ -94,6 +95,17 @@ void McpServer::AddCommonTools() {
                     return true;
                 }
                 return false;
+            });
+
+        // 学伴语音入口：打开一丢播客，返回时回到当前学伴页面。
+        AddTool("self.app.open_podcast",
+            "Open the Yidu Podcast (一丢播客) app on the device screen. "
+            "Use this tool when the user asks to open podcasts, browse podcast "
+            "episodes, or listen to a podcast.",
+            PropertyList(),
+            [](const PropertyList& properties) -> ReturnValue {
+                HomeScreen::RequestOpenPodcastFromCurrentScreen();
+                return true;
             });
     }
 
@@ -242,7 +254,7 @@ void McpServer::AddUserOnlyTools() {
                 ESP_LOGI(TAG, "Snapshot screen result: %s", result.c_str());
                 return true;
             });
-        
+
         AddUserOnlyTool("self.screen.preview_image", "Preview an image on the screen",
             PropertyList({
                 Property("url", kPropertyTypeString)

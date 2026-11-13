@@ -526,6 +526,20 @@ void LaunchPodcast(screen_lifecycle_cb_t lifecycle_cb) {
     }
 }
 
+void OpenPodcastFromCurrentAsync(void* /*arg*/) {
+    lv_obj_t* origin = lv_screen_active();
+    if (origin == nullptr) {
+        return;
+    }
+    lv_obj_t* podcast = PodcastScreen::Create(origin);
+    if (podcast == nullptr) {
+        return;
+    }
+    screen_attach_lifecycle(podcast, podcast_lifecycle_cb);
+    lv_screen_load(podcast);
+    // 不删除来源屏：返回时必须回到同一个学伴页面。
+}
+
 void LaunchDigitalPeople(screen_lifecycle_cb_t lifecycle_cb) {
     lv_obj_t* old_scr = lv_screen_active();
     lv_obj_t* app = DigitalPeopleScreen::Create();
@@ -2528,6 +2542,12 @@ int HomeScreen::GetIdleStandbyMinutes() {
 void HomeScreen::SetIdleStandbyMinutes(int minutes) {
     IdlePower_SetStandbyMinutes(minutes);
     IdlePower_NotifyActivity();
+}
+
+void HomeScreen::RequestOpenPodcastFromCurrentScreen() {
+    if (lv_async_call(OpenPodcastFromCurrentAsync, nullptr) != LV_RESULT_OK) {
+        ESP_LOGW(TAG_HOME, "open podcast request dropped");
+    }
 }
 
 void HomeScreen::RequestSystemShutdown(const char* reason) {

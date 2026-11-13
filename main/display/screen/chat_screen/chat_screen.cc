@@ -1241,6 +1241,18 @@ void ChatScreen::LifecycleCallback(screen_lifecycle_event_t event) {
             ESP_LOGI(TAG, "load: chat_screen -> schedule voice UI start");
             schedule_voice_ui_start();
         }
+        // 从播客等应用返回时，本屏对象被保留但离开时删掉了定时器，
+        // 需要在这里恢复，否则状态栏和激活守卫不再刷新。
+        if (s_ui.screen != nullptr) {
+            if (s_ui.state_timer == nullptr) {
+                s_ui.state_timer =
+                    lv_timer_create(on_chat_status_timer, 500, nullptr);
+            }
+            if (s_ui.activation_guard_timer == nullptr) {
+                s_ui.activation_guard_timer =
+                    lv_timer_create(on_activation_guard_timer, 1000, nullptr);
+            }
+        }
         RefreshDeviceState();
     } else {
         ESP_LOGI(TAG, "unload: chat_screen -> schedule voice UI stop");

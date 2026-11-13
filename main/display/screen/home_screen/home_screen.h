@@ -15,6 +15,9 @@ public:
 
     // PWR_KEY 长按后弹出 [重启 / 关机] 对话框（须在 LVGL 线程调用）。
     static void ShowPowerOptionsDialog();
+    // 从当前屏幕打开播客，返回时回到同一个来源屏（学伴语音入口）。
+    // 线程安全：内部投递到 LVGL 线程执行。
+    static void RequestOpenPodcastFromCurrentScreen();
     // 软件关机（UI / 空闲策略共用）。
     static void RequestSystemShutdown(const char* reason);
 
