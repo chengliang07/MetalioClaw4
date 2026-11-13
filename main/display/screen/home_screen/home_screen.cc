@@ -535,6 +535,9 @@ void OpenPodcastFromCurrentAsync(void* /*arg*/) {
     if (podcast == nullptr) {
         return;
     }
+    if (origin == ChatScreen::CurrentScreen()) {
+        ChatScreen::PrepareTemporaryLeave();
+    }
     screen_attach_lifecycle(podcast, podcast_lifecycle_cb);
     lv_screen_load(podcast);
     // 不删除来源屏：返回时必须回到同一个学伴页面。

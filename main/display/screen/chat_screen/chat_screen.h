@@ -27,6 +27,9 @@ class ChatScreen {
  public:
     static lv_obj_t* Create();
     static void LifecycleCallback(screen_lifecycle_event_t event);
+    // 临时切到其他应用（播客）：保留本页对象和静态状态，返回时原样恢复。
+    static void PrepareTemporaryLeave();
+    static lv_obj_t* CurrentScreen();
 
     // 由 LVAdapterDisplay::SetChatMessage 在持有 esp_lv_adapter 锁后调用。
     // 屏幕未加载时 no-op。

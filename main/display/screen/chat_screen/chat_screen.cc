@@ -127,6 +127,7 @@ bool s_activation_dialog_shows_code = false;
 bool s_header_visible = true;
 // 本页是否已 Acquire 语音会话；leave 幂等，避免 swipe+UNLOAD+UNLOADED 三次 Release。
 bool s_voice_ui_held = false;
+bool s_keep_on_unload = false;
 
 // 当前 TTS 回答共用的助手气泡；每次 tts start 重置。
 lv_obj_t* s_assistant_row = nullptr;
@@ -1006,6 +1007,9 @@ void on_screen_unloaded(lv_event_t* e) {
     if (target != s_ui.screen) {
         return;
     }
+    if (s_keep_on_unload) {
+        return;
+    }
     chat_page_leave();
     delete_timer(s_ui.state_timer);
     delete_timer(s_ui.activation_guard_timer);
@@ -1234,6 +1238,7 @@ lv_obj_t* ChatScreen::Create() {
 
 void ChatScreen::LifecycleCallback(screen_lifecycle_event_t event) {
     if (event == SCREEN_LIFECYCLE_LOAD) {
+        s_keep_on_unload = false;
         if (!is_device_activated()) {
             ESP_LOGW(TAG, "load: chat_screen blocked (device not activated)");
             log_activation_blocked();
@@ -1255,9 +1260,22 @@ void ChatScreen::LifecycleCallback(screen_lifecycle_event_t event) {
         }
         RefreshDeviceState();
     } else {
+        if (s_keep_on_unload) {
+            return;
+        }
         ESP_LOGI(TAG, "unload: chat_screen -> schedule voice UI stop");
         chat_page_leave();
     }
+}
+
+void ChatScreen::PrepareTemporaryLeave() {
+    s_keep_on_unload = true;
+    // 播客要独占音频；先释放学伴的语音会话，返回时 LOAD 会重新拉起。
+    schedule_voice_ui_stop();
+}
+
+lv_obj_t* ChatScreen::CurrentScreen() {
+    return s_ui.screen;
 }
 
 bool ChatScreen::IsActive() {
