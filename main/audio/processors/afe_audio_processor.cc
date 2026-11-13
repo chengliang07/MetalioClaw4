@@ -1,4 +1,5 @@
 #include "afe_audio_processor.h"
+#include <cmath>
 #include <esp_log.h>
 
 #define PROCESSOR_RUNNING 0x01
@@ -91,6 +92,17 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
     if (afe_data_ == nullptr) {
         return;
     }
+    // 回声诊断：累计输入麦克风与参考通道能量（1 秒打印一次）
+    if (codec_ != nullptr && codec_->input_channels() >= 2) {
+        for (size_t i = 0; i + 1 < data.size(); i += 2) {
+            const int32_t mic = data[i];
+            const int32_t ref = data[i + 1];
+            diag_mic_sq_ += static_cast<uint64_t>(mic * mic);
+            diag_ref_sq_ += static_cast<uint64_t>(ref * ref);
+            diag_in_samples_++;
+        }
+        diag_frames_++;
+    }
     afe_iface_->feed(afe_data_, data.data());
 }
 
@@ -142,6 +154,35 @@ void AfeAudioProcessor::AudioProcessorTask() {
                 ESP_LOGI(TAG, "Error code: %d", res->ret_value);
             }
             continue;
+        }
+
+        if (res->data != nullptr && res->data_size > 0) {
+            const int16_t* out = reinterpret_cast<const int16_t*>(res->data);
+            const int out_samples = res->data_size / static_cast<int>(sizeof(int16_t));
+            for (int i = 0; i < out_samples; ++i) {
+                const int32_t v = out[i];
+                diag_out_sq_ += static_cast<uint64_t>(v * v);
+                diag_out_samples_++;
+            }
+        }
+        if (diag_in_samples_ >= 16000) {
+            const uint32_t mic_rms = static_cast<uint32_t>(
+                sqrt(static_cast<double>(diag_mic_sq_) / diag_in_samples_));
+            const uint32_t ref_rms = static_cast<uint32_t>(
+                sqrt(static_cast<double>(diag_ref_sq_) / diag_in_samples_));
+            const uint32_t out_rms = diag_out_samples_ > 0
+                ? static_cast<uint32_t>(
+                      sqrt(static_cast<double>(diag_out_sq_) / diag_out_samples_))
+                : 0;
+            ESP_LOGI(TAG, "echo diag: mic=%u ref=%u aec_out=%u vad=%d",
+                     mic_rms, ref_rms, out_rms,
+                     res->vad_state == VAD_SPEECH ? 1 : 0);
+            diag_frames_ = 0;
+            diag_mic_sq_ = 0;
+            diag_ref_sq_ = 0;
+            diag_in_samples_ = 0;
+            diag_out_sq_ = 0;
+            diag_out_samples_ = 0;
         }
 
         // VAD state change：连续语音约 300ms 才上报，滤掉短促回声。

@@ -113,6 +113,8 @@ public:
     void EnableVoiceProcessing(bool enable, bool reset_decoder = true);
     // 播放 TTS 期间只上传本地 VAD 判定为外部语音的音频，避免回声上行。
     void SetBargeInActive(bool active);
+    // 诊断用：静音上行，只保留本地 AFE 处理
+    void SetVoiceUploadMuted(bool muted) { voice_upload_muted_ = muted; }
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
 
@@ -158,6 +160,7 @@ private:
     bool device_aec_enabled_ = false;  // 偏好；等语音处理器创建后再落到 AFE
     bool voice_detected_ = false;
     std::atomic<bool> barge_in_active_{false};
+    std::atomic<bool> voice_upload_muted_{false};
     std::atomic<int64_t> voice_active_until_us_{0};
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;

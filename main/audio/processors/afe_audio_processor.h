@@ -39,6 +39,13 @@ private:
     bool is_speaking_ = false;
     int speech_frames_ = 0;
     std::vector<int16_t> output_buffer_;
+    // 回声诊断：统计输入麦克风/参考通道与 AEC 输出能量
+    uint32_t diag_frames_ = 0;
+    uint64_t diag_mic_sq_ = 0;
+    uint64_t diag_ref_sq_ = 0;
+    uint32_t diag_in_samples_ = 0;
+    uint64_t diag_out_sq_ = 0;
+    uint32_t diag_out_samples_ = 0;
 
     void AudioProcessorTask();
 };

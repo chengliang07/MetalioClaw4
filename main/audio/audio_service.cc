@@ -50,6 +50,10 @@ void AudioService::Initialize(AudioCodec* codec) {
 #endif
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
+        if (voice_upload_muted_) {
+            // 回声诊断期间不上传任何麦克风数据，避免设备听到自己
+            return;
+        }
         if (barge_in_active_ && !voice_detected_ &&
             esp_timer_get_time() > voice_active_until_us_) {
             // TTS 播放期间丢弃静音和回声，避免服务端把自己的声音当成用户输入。

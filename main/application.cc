@@ -25,6 +25,11 @@
 #include "esp_hosted.h"
 #endif
 
+// 回声诊断：播放 TTS 时运行通信 AFE 并打印 mic/ref/aec_out 能量，
+// 但不上传音频、不触发 VAD 打断，用于确认参考通道是否有效。
+constexpr bool kEchoDiagnostics = true;
+constexpr bool kBargeInByVad = false;
+
 #ifdef HAVE_LVGL
 #include "ota_screen.h"
 #include "home_screen.h"
@@ -763,7 +768,8 @@ void Application::MainEventLoop() {
             if (device_state_ == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
-            } else if (device_state_ == kDeviceStateSpeaking &&
+            } else if (kBargeInByVad &&
+                       device_state_ == kDeviceStateSpeaking &&
                        aec_mode_ == kAecOnDeviceSide &&
                        audio_service_.IsAudioProcessorRunning() &&
                        esp_timer_get_time() >= barge_in_ready_at_us_ &&
@@ -898,6 +904,7 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateListening: {
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+            audio_service_.SetVoiceUploadMuted(false);
             audio_service_.SetBargeInActive(false);
 
             // 从 Speaking（本地打断）进入 Listening 时 AFE 已在运行，
@@ -923,12 +930,17 @@ void Application::SetDeviceState(DeviceState state) {
             // 自己的声音当成用户语音，导致每句话都被自己打断。
             // 因此播放 TTS 时只保留唤醒词引擎（带 AEC）：
             // 用户说“你好一丢”即可打断，且不会被任意回声误触发。
-            audio_service_.SetBargeInActive(false);
-            audio_service_.EnableVoiceProcessing(false);
-            if (aec_mode_ == kAecOnDeviceSide) {
-                audio_service_.EnableWakeWordDetection(true);
-            } else {
+            if (aec_mode_ == kAecOnDeviceSide && kEchoDiagnostics) {
+                // 诊断模式：AFE 照常运行但不上行、不打断，仅打印回声能量
+                audio_service_.SetVoiceUploadMuted(true);
+                audio_service_.SetBargeInActive(true);
+                audio_service_.EnableVoiceProcessing(true, false);
                 audio_service_.EnableWakeWordDetection(false);
+            } else {
+                audio_service_.SetVoiceUploadMuted(false);
+                audio_service_.SetBargeInActive(false);
+                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(aec_mode_ == kAecOnDeviceSide);
             }
             break;
         default:
