@@ -905,6 +905,7 @@ void Application::SetDeviceState(DeviceState state) {
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
             audio_service_.SetVoiceUploadMuted(false);
+            audio_service_.SetSelfAecReference(false);
             audio_service_.SetBargeInActive(false);
 
             // 从 Speaking（本地打断）进入 Listening 时 AFE 已在运行，
@@ -934,10 +935,12 @@ void Application::SetDeviceState(DeviceState state) {
                 // 诊断模式：AFE 照常运行但不上行、不打断，仅打印回声能量
                 audio_service_.SetVoiceUploadMuted(true);
                 audio_service_.SetBargeInActive(true);
+                audio_service_.SetSelfAecReference(true);
                 audio_service_.EnableVoiceProcessing(true, false);
                 audio_service_.EnableWakeWordDetection(false);
             } else {
                 audio_service_.SetVoiceUploadMuted(false);
+                audio_service_.SetSelfAecReference(false);
                 audio_service_.SetBargeInActive(false);
                 audio_service_.EnableVoiceProcessing(false);
                 audio_service_.EnableWakeWordDetection(aec_mode_ == kAecOnDeviceSide);

@@ -33,6 +33,9 @@ void AudioService::Initialize(AudioCodec* codec) {
     codec_ = codec;
     codec_->Start();
 
+    // 预分配 AEC 自供参考环形缓冲（2 秒），运行期不再扩容，避免读写竞争
+    aec_ref_ring_.assign(32000, 0);
+
     /* Setup the audio codec */
     opus_decoder_ = std::make_unique<OpusDecoderWrapper>(codec->output_sample_rate(), 1, OPUS_FRAME_DURATION_MS);
     opus_encoder_ = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
@@ -184,6 +187,20 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
         }
     }
 
+    // 自供 AEC 参考：把模组静音的 R 通道替换成设备自己播放过的 PCM，
+    // 按设定延迟回放，让 AEC 有可对齐的参考信号。
+    if (self_aec_ref_ && codec_->input_channels() == 2 && !aec_ref_ring_.empty()) {
+        constexpr int64_t kRing = 32000;
+        const uint32_t w = aec_ref_write_.load(std::memory_order_acquire);
+        const int n = static_cast<int>(data.size() / 2);
+        const int64_t delay = static_cast<int64_t>(aec_ref_delay_ms_.load()) * 16;
+        const int64_t start = static_cast<int64_t>(w) - delay - n;
+        for (int i = 0; i < n; ++i) {
+            const int64_t idx = start + i;
+            data[2 * i + 1] = (idx >= 0) ? aec_ref_ring_[idx % kRing] : 0;
+        }
+    }
+
     /* Update the last input time */
     last_input_time_ = std::chrono::steady_clock::now();
     debug_statistics_.input_count++;
@@ -305,6 +322,28 @@ void AudioService::AudioOutputTask() {
             codec_->EnableOutput(true);
         }
         codec_->OutputData(task->pcm);
+
+        // 自供 AEC 参考：记录实际播放的 PCM；每播放 5 秒轮换一次参考延迟，
+        // 便于在同一次回答里比较不同延迟的回声消除效果。
+        if (self_aec_ref_ && !task->pcm.empty()) {
+            constexpr uint32_t kRing = 32000;
+            uint32_t w = aec_ref_write_.load(std::memory_order_relaxed);
+            for (int16_t sample : task->pcm) {
+                aec_ref_ring_[w % kRing] = sample;
+                ++w;
+            }
+            aec_ref_write_.store(w, std::memory_order_release);
+            aec_ref_trial_samples_ += static_cast<uint32_t>(task->pcm.size());
+            if (aec_ref_trial_samples_ >= 16000 * 5) {
+                static const int kDelays[] = {40, 100, 160, 220, 300, 400};
+                aec_ref_trial_samples_ = 0;
+                aec_ref_trial_index_ =
+                    (aec_ref_trial_index_ + 1) %
+                    static_cast<int>(sizeof(kDelays) / sizeof(kDelays[0]));
+                aec_ref_delay_ms_.store(kDelays[aec_ref_trial_index_]);
+                ESP_LOGI(TAG, "aec ref delay -> %d ms", kDelays[aec_ref_trial_index_]);
+            }
+        }
 
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();
