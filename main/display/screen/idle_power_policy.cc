@@ -15,7 +15,7 @@ namespace {
 constexpr const char* TAG = "IdlePower";
 
 constexpr int kDefaultShutdownMin = 5;
-constexpr int kDefaultStandbyMin = 3;
+constexpr int kDefaultStandbyMin = 1;
 constexpr int kMaxMinutes = 60;
 constexpr const char* kShutdownNvsKey = "idle_off_min";
 constexpr const char* kStandbyNvsKey = "idle_stby_min";
@@ -198,18 +198,11 @@ void IdlePower_Stop() {
 
 int IdlePower_GetStandbyMinutes() {
     Settings settings("display", false);
-    int minutes = settings.GetInt(kStandbyNvsKey, kDefaultStandbyMin);
-    // 对话/待机等待不少于 3 分钟，避免刚离开就进入待机；0 仍表示永不进入。
-    if (minutes > 0 && minutes < 3) {
-        minutes = 3;
-    }
-    return ClampMinutes(minutes);
+    return ClampMinutes(
+        settings.GetInt(kStandbyNvsKey, kDefaultStandbyMin));
 }
 
 void IdlePower_SetStandbyMinutes(int minutes) {
-    if (minutes > 0 && minutes < 3) {
-        minutes = 3;
-    }
     minutes = ClampMinutes(minutes);
     Settings settings("display", true);
     settings.SetInt(kStandbyNvsKey, minutes);

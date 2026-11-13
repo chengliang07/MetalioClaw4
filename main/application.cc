@@ -629,6 +629,27 @@ void Application::Start() {
                 Schedule([this, display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
                 });
+#ifdef HAVE_LVGL
+                // 后端未接入设备 MCP 时的本地兜底：
+                // “打开/听/一丢 + 播客”直接进入播客页，不再等 LLM 调工具。
+                std::string user_text(text->valuestring);
+                const bool wants_podcast =
+                    user_text.find("播客") != std::string::npos &&
+                    (user_text.find("打开") != std::string::npos ||
+                     user_text.find("一丢") != std::string::npos ||
+                     user_text.find("听") != std::string::npos);
+                if (wants_podcast) {
+                    Schedule([this]() {
+                        ESP_LOGI(TAG, "local intent: open podcast");
+                        if (device_state_ == kDeviceStateSpeaking) {
+                            AbortSpeaking(kAbortReasonNone);
+                        } else if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                            protocol_->SendStopListening();
+                        }
+                        HomeScreen::RequestOpenPodcastFromCurrentScreen();
+                    });
+                }
+#endif
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
