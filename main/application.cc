@@ -650,23 +650,6 @@ void Application::Start() {
                     display->SetChatMessage("user", message.c_str());
                 });
 #ifdef HAVE_LVGL
-                // 服务端流式 STT 命中：说明用户真的在说话（服务端已用 ASR 过滤掉扬声器回声），
-                // 播放中收到即视为插嘴打断，由服务端负责上下文取消，避免本地回声误触发自打断。
-                std::string stt_text(text->valuestring);
-                if (!stt_text.empty() && device_state_ == kDeviceStateSpeaking) {
-                    Schedule([this]() {
-                        if (device_state_ != kDeviceStateSpeaking) {
-                            return;
-                        }
-                        ESP_LOGI(TAG, "server stt barge-in, abort speaking");
-                        // 服务端已识别到用户插话，由服务端负责取消上下文；
-                        // 本地只停播放、切聆听，不再回发 abort 避免来回触发。
-                        aborted_ = true;
-                        SetListeningMode(kListeningModeAutoStop);
-                    });
-                }
-#endif
-#ifdef HAVE_LVGL
                 // 后端未接入设备 MCP 时的本地兜底：
                 // “打开/听/一丢 + 播客”直接进入播客页，不再等 LLM 调工具。
                 std::string user_text(text->valuestring);
@@ -882,7 +865,7 @@ void Application::OnWakeWordDetected() {
 #endif
     } else if (device_state_ == kDeviceStateSpeaking) {
         // 打断开启时，播放中听到唤醒词立即停止本轮回答并进入聆听。
-        if (aec_mode_ == kAecOnDeviceSide) {
+        if (aec_mode_ != kAecOff) {
             ESP_LOGI(TAG, "wake word during speaking, interrupt");
             AbortSpeaking(kAbortReasonNone);
             SetListeningMode(kListeningModeAutoStop);
@@ -902,10 +885,6 @@ void Application::AbortSpeaking(AbortReason reason) {
 }
 
 void Application::SetListeningMode(ListeningMode mode) {
-    // 服务端 AEC 需要 realtime 模式，服务端据此持续接收上行并做实时打断。
-    if (aec_mode_ == kAecOnServerSide && mode == kListeningModeAutoStop) {
-        mode = kListeningModeRealtime;
-    }
     listening_mode_ = mode;
     SetDeviceState(kDeviceStateListening);
 }
@@ -982,35 +961,24 @@ void Application::SetDeviceState(DeviceState state) {
             // 自己的声音当成用户语音，导致每句话都被自己打断。
             // 因此播放 TTS 时只保留唤醒词引擎（带 AEC）：
             // 用户说“你好一丢”即可打断，且不会被任意回声误触发。
-            if (aec_mode_ == kAecOnDeviceSide) {
-                // 生产模式：播放 TTS 时运行通信 AFE，自供 AEC 参考 + 双讲门限，
-                // 正常上行麦克风数据，并据本地 VAD 触发打断（边说边听）。
-                audio_service_.SetVoiceUploadMuted(false);
-                audio_service_.SetSelfAecReference(true);
-                audio_service_.SetSelfAecDelayMs(kSelfAecDelayMs);
-                audio_service_.SetBargeInActive(true);
-                audio_service_.GetAudioProcessor()->SetEchoGate(true);
-                barge_in_ready_at_us_ = esp_timer_get_time() + 1200000;
-                audio_service_.EnableVoiceProcessing(true, false);
-                audio_service_.EnableWakeWordDetection(false);
-            } else if (aec_mode_ == kAecOnServerSide) {
-                // 服务端 AEC：播放 TTS 时保持 AFE 运行并**持续上行**（不门控），
-                // 回声由服务端用下行播放时间戳对齐抵消，服务端检测到人声后下发
-                // abort / stt 触发打断。本地不做合成参考、不做本地 VAD 打断。
-                audio_service_.SetVoiceUploadMuted(false);
+            if (aec_mode_ != kAecOff) {
+                // 本机 AEC 参考通道无效（ref 恒为 0），全双工上行必然把扬声器
+                // 回声送给服务端并触发误打断。因此播放 TTS 时不上行麦克风，
+                // 只保留唤醒词引擎：说“你好一丢”即可打断本轮回答。
+                audio_service_.SetVoiceUploadMuted(true);
                 audio_service_.SetSelfAecReference(false);
                 audio_service_.GetAudioProcessor()->SetEchoGate(false);
                 audio_service_.SetBargeInActive(false);
                 barge_in_ready_at_us_ = esp_timer_get_time() + 1200000;
-                audio_service_.EnableVoiceProcessing(true, false);
-                audio_service_.EnableWakeWordDetection(false);
+                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(true);
             } else {
                 audio_service_.SetVoiceUploadMuted(false);
                 audio_service_.SetSelfAecReference(false);
                 audio_service_.GetAudioProcessor()->SetEchoGate(false);
                 audio_service_.SetBargeInActive(false);
                 audio_service_.EnableVoiceProcessing(false);
-                audio_service_.EnableWakeWordDetection(aec_mode_ == kAecOnDeviceSide);
+                audio_service_.EnableWakeWordDetection(false);
             }
             break;
         default:
