@@ -21,6 +21,8 @@
 #include <ssid_manager.h>
 #include <inttypes.h>
 
+void DiagLogEnableUdp(bool enable);
+
 #if CONFIG_ESP_HOSTED_ENABLED
 #include "esp_hosted.h"
 #endif
@@ -533,6 +535,8 @@ void Application::Start() {
 
     /* Wait for the network to be ready */
     board.StartNetwork();
+    // lwIP 就绪后再启用 UDP 诊断通道（提前创建 socket 会导致启动崩溃）
+    DiagLogEnableUdp(true);
 
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);

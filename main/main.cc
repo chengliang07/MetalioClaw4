@@ -22,8 +22,17 @@
 // 避免 USB Serial/JTAG 句柄在运行中失效导致无法抓日志。
 static int s_diag_udp_sock = -1;
 static vprintf_like_t s_prev_log_vprintf = nullptr;
+static bool s_diag_udp_enabled = false;
+
+// 必须在网络（lwIP）初始化完成后再打开，否则 socket() 会导致启动崩溃。
+void DiagLogEnableUdp(bool enable) {
+    s_diag_udp_enabled = enable;
+}
 
 static void DiagUdpSend(const char* line) {
+    if (!s_diag_udp_enabled) {
+        return;
+    }
     if (s_diag_udp_sock < 0) {
         s_diag_udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
         if (s_diag_udp_sock < 0) {
