@@ -185,9 +185,9 @@ void AfeAudioProcessor::AudioProcessorTask() {
                 ? static_cast<uint32_t>(
                       sqrt(static_cast<double>(diag_out_sq_) / diag_out_samples_))
                 : 0;
-            ESP_LOGI(TAG, "echo diag: mic=%u ref=%u aec_out=%u vad=%d",
+            ESP_LOGI(TAG, "echo diag: mic=%u ref=%u aec_out=%u vad=%d gate=%d",
                      mic_rms, ref_rms, out_rms,
-                     res->vad_state == VAD_SPEECH ? 1 : 0);
+                     res->vad_state == VAD_SPEECH ? 1 : 0, last_gate_speech_);
           }
             diag_frames_ = 0;
             diag_mic_sq_ = 0;
@@ -200,6 +200,7 @@ void AfeAudioProcessor::AudioProcessorTask() {
         // 双讲门限：AEC 只能压掉约 9dB 回声，VAD 仍可能被残留回声触发。
         // 这里用回声基线做门限：只有明显高于当前回声电平的人声才算打断。
         bool speech = res->vad_state == VAD_SPEECH;
+        last_gate_speech_ = speech ? 1 : 0;
         float frame_rms = 0.0f;
         if (echo_gate_ && res->data != nullptr && res->data_size > 0) {
             const int16_t* out = reinterpret_cast<const int16_t*>(res->data);

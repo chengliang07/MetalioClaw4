@@ -50,6 +50,7 @@ private:
     uint32_t diag_out_samples_ = 0;
     bool echo_gate_ = false;
     int echo_gate_frames_ = 0;
+    int last_gate_speech_ = 0;
     bool diag_enabled_ = true;
     float echo_baseline_ = 0.0f;
 
