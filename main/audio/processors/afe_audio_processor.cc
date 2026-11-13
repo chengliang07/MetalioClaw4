@@ -185,9 +185,12 @@ void AfeAudioProcessor::AudioProcessorTask() {
                 ? static_cast<uint32_t>(
                       sqrt(static_cast<double>(diag_out_sq_) / diag_out_samples_))
                 : 0;
-            ESP_LOGI(TAG, "echo diag: mic=%u ref=%u aec_out=%u vad=%d gate=%d",
+            ESP_LOGI(TAG,
+                     "echo diag: mic=%u ref=%u aec_out=%u vad=%d gate=%d peak=%d",
                      mic_rms, ref_rms, out_rms,
-                     res->vad_state == VAD_SPEECH ? 1 : 0, last_gate_speech_);
+                     res->vad_state == VAD_SPEECH ? 1 : 0, last_gate_speech_,
+                     static_cast<int>(echo_peak_ratio_));
+            echo_peak_ratio_ = 0.0f;
           }
             diag_frames_ = 0;
             diag_mic_sq_ = 0;
@@ -219,11 +222,18 @@ void AfeAudioProcessor::AudioProcessorTask() {
                     echo_baseline_ = 100.0f;
                 }
             } else {
-                if (speech && frame_rms < echo_baseline_ * 1.8f) {
+                const float ratio =
+                    frame_rms / (echo_baseline_ > 1.0f ? echo_baseline_ : 1.0f);
+                if (ratio > echo_peak_ratio_) {
+                    echo_peak_ratio_ = ratio;
+                }
+                if (speech && ratio < 2.0f) {
                     speech = false;
                 }
                 if (!speech) {
-                    echo_baseline_ = echo_baseline_ * 0.99f + frame_rms * 0.01f;
+                    // 快升慢降：跟上句子内重音，避免响音节突破门限
+                    const float rate = frame_rms > echo_baseline_ ? 0.10f : 0.005f;
+                    echo_baseline_ += (frame_rms - echo_baseline_) * rate;
                 }
             }
         }
@@ -231,10 +241,10 @@ void AfeAudioProcessor::AudioProcessorTask() {
         // VAD state change：连续语音约 300ms 才上报，滤掉短促回声。
         if (vad_state_change_callback_) {
             if (speech) {
-                if (speech_frames_ < 20) {
+                if (speech_frames_ < 40) {
                     speech_frames_++;
                 }
-                if (!is_speaking_ && speech_frames_ >= 10) {
+                if (!is_speaking_ && speech_frames_ >= 20) {
                     is_speaking_ = true;
                     vad_state_change_callback_(true);
                 }

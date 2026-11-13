@@ -950,7 +950,7 @@ void Application::SetDeviceState(DeviceState state) {
                 audio_service_.SetSelfAecDelayMs(kSelfAecDelayMs);
                 audio_service_.SetBargeInActive(true);
                 audio_service_.GetAudioProcessor()->SetEchoGate(true);
-                barge_in_ready_at_us_ = esp_timer_get_time() + 700000;
+                barge_in_ready_at_us_ = esp_timer_get_time() + 1200000;
                 audio_service_.EnableVoiceProcessing(true, false);
                 audio_service_.EnableWakeWordDetection(false);
             } else {

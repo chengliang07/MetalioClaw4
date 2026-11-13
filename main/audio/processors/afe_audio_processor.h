@@ -51,6 +51,7 @@ private:
     bool echo_gate_ = false;
     int echo_gate_frames_ = 0;
     int last_gate_speech_ = 0;
+    float echo_peak_ratio_ = 0.0f;
     bool diag_enabled_ = true;
     float echo_baseline_ = 0.0f;
 
