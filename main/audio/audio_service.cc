@@ -347,6 +347,15 @@ void AudioService::AudioOutputTask() {
         }
         codec_->OutputData(task->pcm);
 
+        // 服务端 AEC：记录这一帧下行音频的播放时间戳（FIFO，供上行帧对齐）
+        if (task->timestamp > 0) {
+            std::lock_guard<std::mutex> ts_lock(audio_queue_mutex_);
+            if (timestamp_queue_.size() >= 3) {
+                timestamp_queue_.pop_front();
+            }
+            timestamp_queue_.push_back(task->timestamp);
+        }
+
         // 自供 AEC 参考：记录实际播放的 PCM。延迟固定使用已验证的最佳值。
         if (self_aec_ref_ && !task->pcm.empty()) {
             constexpr uint32_t kRing = 32000;
@@ -470,7 +479,11 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
     
     /* Push the task to the encode queue */
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
-
+    // 服务端 AEC：上行帧按 FIFO 取当前下行播放时间戳，供服务端对齐回声
+    if (type == kAudioTaskTypeEncodeToSendQueue && !timestamp_queue_.empty()) {
+        task->timestamp = timestamp_queue_.front();
+        timestamp_queue_.pop_front();
+    }
     audio_queue_cv_.wait(lock, [this]() { return audio_encode_queue_.size() < MAX_ENCODE_TASKS_IN_QUEUE; });
     audio_encode_queue_.push_back(std::move(task));
     audio_queue_cv_.notify_all();
@@ -735,6 +748,7 @@ bool AudioService::IsIdle() {
 void AudioService::ResetDecoder() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     opus_decoder_->ResetState();
+    timestamp_queue_.clear();
     audio_decode_queue_.clear();
     audio_playback_queue_.clear();
     audio_testing_queue_.clear();

@@ -861,7 +861,8 @@ void on_interrupt_clicked() {
     }
     auto& app = Application::GetInstance();
     const bool currently_on = app.GetAecMode() != kAecOff;
-    const AecMode next = currently_on ? kAecOff : kAecOnDeviceSide;
+    // 打断走服务端 AEC + 实时打断（设备持续上行，由服务端消回声并下发 abort）。
+    const AecMode next = currently_on ? kAecOff : kAecOnServerSide;
     ESP_LOGI(TAG, "echo protection -> %s", currently_on ? "off" : "on");
     app.SetAecMode(next);
 }

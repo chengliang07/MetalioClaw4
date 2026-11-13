@@ -158,6 +158,8 @@ private:
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_testing_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_encode_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
+    // 服务端 AEC：下行播放时间戳 FIFO，逐个分配给上行帧（v2 帧头）
+    std::deque<uint32_t> timestamp_queue_;
 
     bool wake_word_initialized_ = false;
     bool audio_processor_initialized_ = false;

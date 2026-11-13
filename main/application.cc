@@ -659,7 +659,9 @@ void Application::Start() {
                             return;
                         }
                         ESP_LOGI(TAG, "server stt barge-in, abort speaking");
-                        AbortSpeaking(kAbortReasonNone);
+                        // 服务端已识别到用户插话，由服务端负责取消上下文；
+                        // 本地只停播放、切聆听，不再回发 abort 避免来回触发。
+                        aborted_ = true;
                         SetListeningMode(kListeningModeAutoStop);
                     });
                 }
@@ -691,7 +693,7 @@ void Application::Start() {
             ESP_LOGI(TAG, "server abort received");
             Schedule([this]() {
                 if (device_state_ == kDeviceStateSpeaking) {
-                    AbortSpeaking(kAbortReasonNone);
+                    aborted_ = true;
                     SetListeningMode(kListeningModeAutoStop);
                 }
             });
@@ -900,6 +902,10 @@ void Application::AbortSpeaking(AbortReason reason) {
 }
 
 void Application::SetListeningMode(ListeningMode mode) {
+    // 服务端 AEC 需要 realtime 模式，服务端据此持续接收上行并做实时打断。
+    if (aec_mode_ == kAecOnServerSide && mode == kListeningModeAutoStop) {
+        mode = kListeningModeRealtime;
+    }
     listening_mode_ = mode;
     SetDeviceState(kDeviceStateListening);
 }
@@ -984,6 +990,17 @@ void Application::SetDeviceState(DeviceState state) {
                 audio_service_.SetSelfAecDelayMs(kSelfAecDelayMs);
                 audio_service_.SetBargeInActive(true);
                 audio_service_.GetAudioProcessor()->SetEchoGate(true);
+                barge_in_ready_at_us_ = esp_timer_get_time() + 1200000;
+                audio_service_.EnableVoiceProcessing(true, false);
+                audio_service_.EnableWakeWordDetection(false);
+            } else if (aec_mode_ == kAecOnServerSide) {
+                // 服务端 AEC：播放 TTS 时保持 AFE 运行并**持续上行**（不门控），
+                // 回声由服务端用下行播放时间戳对齐抵消，服务端检测到人声后下发
+                // abort / stt 触发打断。本地不做合成参考、不做本地 VAD 打断。
+                audio_service_.SetVoiceUploadMuted(false);
+                audio_service_.SetSelfAecReference(false);
+                audio_service_.GetAudioProcessor()->SetEchoGate(false);
+                audio_service_.SetBargeInActive(false);
                 barge_in_ready_at_us_ = esp_timer_get_time() + 1200000;
                 audio_service_.EnableVoiceProcessing(true, false);
                 audio_service_.EnableWakeWordDetection(false);
@@ -1165,7 +1182,7 @@ void Application::SendMcpMessage(const std::string& payload) {
 }
 
 void Application::SetAecMode(AecMode mode) {
-    if (mode != kAecOff && mode != kAecOnDeviceSide) {
+    if (mode != kAecOff && mode != kAecOnDeviceSide && mode != kAecOnServerSide) {
         ESP_LOGW(TAG, "unsupported AecMode %d, fallback Off", static_cast<int>(mode));
         mode = kAecOff;
     }
@@ -1187,7 +1204,7 @@ void Application::SetAecMode(AecMode mode) {
         auto display = board.GetDisplay();
         // 点击瞬间不创建/销毁 AFE：空闲态两套 AFE 同时常驻会硬复位。
         // 偏好由下一次 EnableVoiceProcessing 时同步到通信 AFE。
-        if (aec_mode_ == kAecOnDeviceSide) {
+        if (aec_mode_ != kAecOff) {
             display->ShowNotification(Lang::Strings::RTC_MODE_ON);
         } else {
             display->ShowNotification(Lang::Strings::RTC_MODE_OFF);
@@ -1204,9 +1221,10 @@ void Application::ApplyInterruptPreferenceFromNvs() {
     Settings settings("audio");
     // 无记录时默认关回声保护，避免上电即全双工
     const bool interrupt_on = settings.GetBool("interrupt", false);
-    aec_mode_ = interrupt_on ? kAecOnDeviceSide : kAecOff;
-    audio_service_.EnableDeviceAec(interrupt_on);
-    ESP_LOGI(TAG, "echo protection preference: %s (device AEC)", interrupt_on ? "on" : "off");
+    // 服务端 AEC：设备持续上行、由服务端做回声抵消与实时打断（需服务端支持）。
+    aec_mode_ = interrupt_on ? kAecOnServerSide : kAecOff;
+    audio_service_.EnableDeviceAec(false);
+    ESP_LOGI(TAG, "echo protection preference: %s (server AEC)", interrupt_on ? "on" : "off");
 }
 
 void Application::PlaySound(const std::string_view& sound) {

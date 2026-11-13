@@ -29,6 +29,7 @@
 enum AecMode {
     kAecOff,
     kAecOnDeviceSide,
+    kAecOnServerSide,
 };
 
 class Application {

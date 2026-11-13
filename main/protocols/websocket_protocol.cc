@@ -83,6 +83,9 @@ bool WebsocketProtocol::OpenAudioChannel() {
     Settings settings("websocket", false);
     std::string url = settings.GetString("url");
     std::string token = settings.GetString("token");
+    // 服务端 AEC / 实时打断需要 v2 时间戳帧；默认 v1 保证普通连接可用。
+    Settings audio_settings("audio", false);
+    version_ = audio_settings.GetBool("interrupt", false) ? 2 : 1;
     int version = settings.GetInt("version");
     if (version != 0) {
         version_ = version;
