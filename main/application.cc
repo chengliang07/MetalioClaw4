@@ -611,6 +611,12 @@ void Application::Start() {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this, display]() {
+                    if (esp_timer_get_time() < abort_suppress_until_us_) {
+                        // 本地打断后服务端可能还在发旧 TTS，忽略迟到的 start，
+                        // 否则会被拉回 Speaking 继续播放，导致用户这句话识别不到。
+                        ESP_LOGW(TAG, "ignore stale tts start after abort");
+                        return;
+                    }
                     display->BeginAssistantRound();
                     aborted_ = false;
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
@@ -644,6 +650,21 @@ void Application::Start() {
                     display->SetChatMessage("user", message.c_str());
                 });
 #ifdef HAVE_LVGL
+                // 服务端流式 STT 命中：说明用户真的在说话（服务端已用 ASR 过滤掉扬声器回声），
+                // 播放中收到即视为插嘴打断，由服务端负责上下文取消，避免本地回声误触发自打断。
+                std::string stt_text(text->valuestring);
+                if (!stt_text.empty() && device_state_ == kDeviceStateSpeaking) {
+                    Schedule([this]() {
+                        if (device_state_ != kDeviceStateSpeaking) {
+                            return;
+                        }
+                        ESP_LOGI(TAG, "server stt barge-in, abort speaking");
+                        AbortSpeaking(kAbortReasonNone);
+                        SetListeningMode(kListeningModeAutoStop);
+                    });
+                }
+#endif
+#ifdef HAVE_LVGL
                 // 后端未接入设备 MCP 时的本地兜底：
                 // “打开/听/一丢 + 播客”直接进入播客页，不再等 LLM 调工具。
                 std::string user_text(text->valuestring);
@@ -665,6 +686,15 @@ void Application::Start() {
                 }
 #endif
             }
+        } else if (strcmp(type->valuestring, "abort") == 0) {
+            // 服务端主动下发中断：停播放并切回聆听（对应方案中的 server→device abort）。
+            ESP_LOGI(TAG, "server abort received");
+            Schedule([this]() {
+                if (device_state_ == kDeviceStateSpeaking) {
+                    AbortSpeaking(kAbortReasonNone);
+                    SetListeningMode(kListeningModeAutoStop);
+                }
+            });
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
             if (cJSON_IsString(emotion)) {
@@ -863,6 +893,7 @@ void Application::OnWakeWordDetected() {
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
     aborted_ = true;
+    abort_suppress_until_us_ = esp_timer_get_time() + 2500000;
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
     }
