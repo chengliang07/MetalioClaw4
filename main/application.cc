@@ -919,17 +919,15 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
-            // 打断开启时运行通信 AFE：AEC 消除扬声器回声，本地 VAD
-            // 只把外部语音上行并触发打断，实现边说边听。
-            // 前 900ms 不响应打断，等 AEC 收敛，避免被首帧回声自打断。
+            // 该模组的 AEC 参考通道无法消掉外放回声，通信 AFE 的 VAD 会把
+            // 自己的声音当成用户语音，导致每句话都被自己打断。
+            // 因此播放 TTS 时只保留唤醒词引擎（带 AEC）：
+            // 用户说“你好一丢”即可打断，且不会被任意回声误触发。
+            audio_service_.SetBargeInActive(false);
+            audio_service_.EnableVoiceProcessing(false);
             if (aec_mode_ == kAecOnDeviceSide) {
-                audio_service_.SetBargeInActive(true);
-                barge_in_ready_at_us_ = esp_timer_get_time() + 900000;
-                audio_service_.EnableVoiceProcessing(true, false);
-                audio_service_.EnableWakeWordDetection(false);
+                audio_service_.EnableWakeWordDetection(true);
             } else {
-                audio_service_.SetBargeInActive(false);
-                audio_service_.EnableVoiceProcessing(false);
                 audio_service_.EnableWakeWordDetection(false);
             }
             break;
