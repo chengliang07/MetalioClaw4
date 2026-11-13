@@ -903,7 +903,10 @@ void Application::SetDeviceState(DeviceState state) {
             // 从 Speaking（本地打断）进入 Listening 时 AFE 已在运行，
             // 仍需补发 listen start，否则服务端不会开始接收本轮语音。
             bool need_start_listening = (previous_state == kDeviceStateSpeaking);
-            if (!audio_service_.IsAudioProcessorRunning()) {
+            // 打断后必须重开采集：清掉 AFE 里的回声残留、丢弃 120ms 预热、
+            // 并清空未播放完的 TTS（否则会听见自己的尾音而“自言自语”）。
+            if (!audio_service_.IsAudioProcessorRunning() ||
+                previous_state == kDeviceStateSpeaking) {
                 need_start_listening = true;
                 audio_service_.EnableVoiceProcessing(true);
                 audio_service_.EnableWakeWordDetection(false);
@@ -916,14 +919,17 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
-            // 播放 TTS 时只保留唤醒词 AFE（带 AEC），不再同时跑通信 AFE。
-            // 这样不会把扬声器回声上行，也不会被 VAD 误判成用户说话；
-            // 用户说“你好一丢”即可打断当前回答。
-            audio_service_.SetBargeInActive(false);
-            audio_service_.EnableVoiceProcessing(false);
+            // 打断开启时运行通信 AFE：AEC 消除扬声器回声，本地 VAD
+            // 只把外部语音上行并触发打断，实现边说边听。
+            // 前 900ms 不响应打断，等 AEC 收敛，避免被首帧回声自打断。
             if (aec_mode_ == kAecOnDeviceSide) {
-                audio_service_.EnableWakeWordDetection(true);
+                audio_service_.SetBargeInActive(true);
+                barge_in_ready_at_us_ = esp_timer_get_time() + 900000;
+                audio_service_.EnableVoiceProcessing(true, false);
+                audio_service_.EnableWakeWordDetection(false);
             } else {
+                audio_service_.SetBargeInActive(false);
+                audio_service_.EnableVoiceProcessing(false);
                 audio_service_.EnableWakeWordDetection(false);
             }
             break;

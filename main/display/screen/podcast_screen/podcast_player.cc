@@ -250,12 +250,14 @@ bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
         cfg.url = current.c_str();
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
         cfg.timeout_ms = 15000;
-        cfg.buffer_size = 4096;
+        // 音频只需小块缓冲；TLS 握手本身占用大量内部 RAM，这里留出余量，
+        // 避免和语音会话/TLS 会话叠加时 open 失败（errno 0）。
+        cfg.buffer_size = 2048;
         cfg.buffer_size_tx = 1024;
         const std::string device_token = PodcastClient::DeviceToken();
         bool opened = false;
         int last_errno = 0;
-        for (int attempt = 0; attempt < 3; ++attempt) {
+        for (int attempt = 0; attempt < 5; ++attempt) {
             client = esp_http_client_init(&cfg);
             if (client == nullptr) {
                 error = "创建网络连接失败";
@@ -286,8 +288,8 @@ bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
                          heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
             esp_http_client_cleanup(client);
             client = nullptr;
-            if (attempt < 2) {
-                vTaskDelay(pdMS_TO_TICKS(500));
+            if (attempt < 4) {
+                vTaskDelay(pdMS_TO_TICKS(400 + attempt * 400));
             }
         }
         if (!opened) {
