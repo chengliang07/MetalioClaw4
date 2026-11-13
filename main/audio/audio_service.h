@@ -111,6 +111,7 @@ public:
     void ReleaseWakeWordEngine();
     bool IsWakeWordEngineReady() const { return wake_word_initialized_; }
     void EnableVoiceProcessing(bool enable, bool reset_decoder = true);
+    AudioProcessor* GetAudioProcessor() { return audio_processor_.get(); }
     // 播放 TTS 期间只上传本地 VAD 判定为外部语音的音频，避免回声上行。
     void SetBargeInActive(bool active);
     // 诊断用：静音上行，只保留本地 AFE 处理

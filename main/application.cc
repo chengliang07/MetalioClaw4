@@ -940,11 +940,13 @@ void Application::SetDeviceState(DeviceState state) {
                 audio_service_.SetVoiceUploadMuted(true);
                 audio_service_.SetBargeInActive(true);
                 audio_service_.SetSelfAecReference(true);
+                audio_service_.GetAudioProcessor()->SetEchoGate(true);
                 audio_service_.EnableVoiceProcessing(true, false);
                 audio_service_.EnableWakeWordDetection(false);
             } else {
                 audio_service_.SetVoiceUploadMuted(false);
                 audio_service_.SetSelfAecReference(false);
+                audio_service_.GetAudioProcessor()->SetEchoGate(false);
                 audio_service_.SetBargeInActive(false);
                 audio_service_.EnableVoiceProcessing(false);
                 audio_service_.EnableWakeWordDetection(aec_mode_ == kAecOnDeviceSide);

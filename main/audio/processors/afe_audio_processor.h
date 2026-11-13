@@ -27,6 +27,7 @@ public:
     void OnVadStateChange(std::function<void(bool speaking)> callback) override;
     size_t GetFeedSize() override;
     void EnableDeviceAec(bool enable) override;
+    void SetEchoGate(bool enable) override { echo_gate_ = enable; }
 
 private:
     EventGroupHandle_t event_group_ = nullptr;
@@ -46,6 +47,8 @@ private:
     uint32_t diag_in_samples_ = 0;
     uint64_t diag_out_sq_ = 0;
     uint32_t diag_out_samples_ = 0;
+    bool echo_gate_ = false;
+    float echo_baseline_ = 0.0f;
 
     void AudioProcessorTask();
 };

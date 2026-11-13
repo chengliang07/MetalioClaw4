@@ -185,9 +185,32 @@ void AfeAudioProcessor::AudioProcessorTask() {
             diag_out_samples_ = 0;
         }
 
+        // 双讲门限：AEC 只能压掉约 9dB 回声，VAD 仍可能被残留回声触发。
+        // 这里用回声基线做门限：只有明显高于当前回声电平的人声才算打断。
+        bool speech = res->vad_state == VAD_SPEECH;
+        float frame_rms = 0.0f;
+        if (echo_gate_ && res->data != nullptr && res->data_size > 0) {
+            const int16_t* out = reinterpret_cast<const int16_t*>(res->data);
+            const int count = res->data_size / static_cast<int>(sizeof(int16_t));
+            uint64_t sum = 0;
+            for (int i = 0; i < count; ++i) {
+                sum += static_cast<uint64_t>(static_cast<int32_t>(out[i]) * out[i]);
+            }
+            frame_rms = sqrt(static_cast<double>(sum) / count);
+            if (echo_baseline_ < 100.0f) {
+                echo_baseline_ = frame_rms > 1.0f ? frame_rms : 100.0f;
+            }
+            if (speech && frame_rms < echo_baseline_ * 1.8f) {
+                speech = false;
+            }
+            if (!speech) {
+                echo_baseline_ = echo_baseline_ * 0.99f + frame_rms * 0.01f;
+            }
+        }
+
         // VAD state change：连续语音约 300ms 才上报，滤掉短促回声。
         if (vad_state_change_callback_) {
-            if (res->vad_state == VAD_SPEECH) {
+            if (speech) {
                 if (speech_frames_ < 20) {
                     speech_frames_++;
                 }
