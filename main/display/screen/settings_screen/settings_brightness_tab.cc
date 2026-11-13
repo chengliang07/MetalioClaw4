@@ -17,6 +17,7 @@ struct BrightnessUi {
 BrightnessUi s_ui;
 
 void OnBrightnessSliderChanged(lv_event_t* e) {
+    const bool permanent = lv_event_get_code(e) == LV_EVENT_RELEASED;
     auto* slider = static_cast<lv_obj_t*>(lv_event_get_target(e));
     int value = static_cast<int>(lv_slider_get_value(slider));
     if (value < static_cast<int>(kBacklightMinPercent)) {
@@ -24,7 +25,7 @@ void OnBrightnessSliderChanged(lv_event_t* e) {
         lv_slider_set_value(slider, value, LV_ANIM_OFF);
     }
     UpdatePctLabel(s_ui.pct_label, value);
-    ApplyBrightness(value);
+    ApplyBrightness(value, permanent);
 }
 
 }  // namespace

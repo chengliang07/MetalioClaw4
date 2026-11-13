@@ -14,10 +14,11 @@ struct VolumeUi {
 VolumeUi s_ui;
 
 void OnVolumeSliderChanged(lv_event_t* e) {
+    const bool permanent = lv_event_get_code(e) == LV_EVENT_RELEASED;
     auto* slider = static_cast<lv_obj_t*>(lv_event_get_target(e));
     int value = static_cast<int>(lv_slider_get_value(slider));
     UpdatePctLabel(s_ui.pct_label, value);
-    ApplyVolume(value);
+    ApplyVolume(value, permanent);
     if (value != static_cast<int>(lv_slider_get_value(slider))) {
         lv_slider_set_value(slider, value, LV_ANIM_OFF);
     }

@@ -69,17 +69,17 @@ void UpdateMinutesLabel(lv_obj_t* label, int minutes, const char* never_text) {
     lv_label_set_text(label, buf);
 }
 
-void ApplyBrightness(int value) {
+void ApplyBrightness(int value, bool permanent) {
     if (value < static_cast<int>(kBacklightMinPercent)) {
         value = kBacklightMinPercent;
     }
     Backlight* backlight = Board::GetInstance().GetBacklight();
     if (backlight != nullptr) {
-        backlight->SetBrightness(static_cast<uint8_t>(value), true);
+        backlight->SetBrightness(static_cast<uint8_t>(value), permanent);
     }
 }
 
-void ApplyVolume(int volume) {
+void ApplyVolume(int volume, bool permanent) {
     if (volume < 0) {
         volume = 0;
     } else if (volume > 100) {
@@ -87,10 +87,17 @@ void ApplyVolume(int volume) {
     }
 
     AudioCodec* codec = Board::GetInstance().GetAudioCodec();
-    if (codec == nullptr || codec->output_volume() == volume) {
+    if (codec == nullptr) {
         return;
     }
-    codec->SetOutputVolume(volume);
+    if (!permanent && codec->output_volume() == volume) {
+        return;
+    }
+    if (permanent) {
+        codec->SetOutputVolume(volume);
+    } else {
+        codec->SetOutputVolumeTransient(volume);
+    }
 }
 
 void StyleSlider(lv_obj_t* slider) {
@@ -128,6 +135,7 @@ lv_obj_t* CreateSliderRow(lv_obj_t* parent, int min_value, int max_value, int in
     lv_slider_set_value(slider, initial_value, LV_ANIM_OFF);
     lv_obj_align(slider, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_event_cb(slider, cb, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(slider, cb, LV_EVENT_RELEASED, nullptr);
     return row;
 }
 

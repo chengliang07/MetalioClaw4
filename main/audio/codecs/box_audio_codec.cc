@@ -184,6 +184,15 @@ void BoxAudioCodec::SetOutputVolume(int volume) {
     AudioCodec::SetOutputVolume(volume);
 }
 
+void BoxAudioCodec::SetOutputVolumeTransient(int volume) {
+    esp_err_t ret = esp_codec_dev_set_out_vol(output_dev_, volume);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "set transient volume failed: %s",
+                 esp_err_to_name(ret));
+    }
+    AudioCodec::SetOutputVolumeTransient(volume);
+}
+
 void BoxAudioCodec::EnableInput(bool enable) {
     std::lock_guard<std::mutex> lock(data_if_mutex_);
     if (enable == input_enabled_) {

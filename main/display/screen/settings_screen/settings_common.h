@@ -29,8 +29,9 @@ int ReadInitialVolume();
 void UpdatePctLabel(lv_obj_t* label, int pct);
 void UpdateMinutesLabel(lv_obj_t* label, int minutes, const char* never_text);
 
-void ApplyBrightness(int value);
-void ApplyVolume(int volume);
+// permanent=false 只改硬件，松手后再落盘，避免拖动时高频写 NVS。
+void ApplyBrightness(int value, bool permanent = true);
+void ApplyVolume(int volume, bool permanent = true);
 
 void StyleSlider(lv_obj_t* slider);
 lv_obj_t* CreateSliderRow(lv_obj_t* parent, int min_value, int max_value, int initial_value,

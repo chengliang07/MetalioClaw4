@@ -17,17 +17,23 @@ struct StandbyUi {
 StandbyUi s_ui;
 
 void OnEnterStandbySliderChanged(lv_event_t* e) {
+    const bool permanent = lv_event_get_code(e) == LV_EVENT_RELEASED;
     auto* slider = static_cast<lv_obj_t*>(lv_event_get_target(e));
     int value = static_cast<int>(lv_slider_get_value(slider));
     UpdateMinutesLabel(s_ui.enter_standby_min_label, value, I18n::T("永不进入"));
-    HomeScreen::SetIdleStandbyMinutes(value);
+    if (permanent) {
+        HomeScreen::SetIdleStandbyMinutes(value);
+    }
 }
 
 void OnShutdownSliderChanged(lv_event_t* e) {
+    const bool permanent = lv_event_get_code(e) == LV_EVENT_RELEASED;
     auto* slider = static_cast<lv_obj_t*>(lv_event_get_target(e));
     int value = static_cast<int>(lv_slider_get_value(slider));
     UpdateMinutesLabel(s_ui.shutdown_min_label, value, I18n::T("永不关机"));
-    HomeScreen::SetIdleShutdownMinutes(value);
+    if (permanent) {
+        HomeScreen::SetIdleShutdownMinutes(value);
+    }
 }
 
 }  // namespace
