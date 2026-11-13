@@ -323,8 +323,7 @@ void AudioService::AudioOutputTask() {
         }
         codec_->OutputData(task->pcm);
 
-        // 自供 AEC 参考：记录实际播放的 PCM；每播放 5 秒轮换一次参考延迟，
-        // 便于在同一次回答里比较不同延迟的回声消除效果。
+        // 自供 AEC 参考：记录实际播放的 PCM。延迟固定使用已验证的最佳值。
         if (self_aec_ref_ && !task->pcm.empty()) {
             constexpr uint32_t kRing = 32000;
             uint32_t w = aec_ref_write_.load(std::memory_order_relaxed);
@@ -333,16 +332,6 @@ void AudioService::AudioOutputTask() {
                 ++w;
             }
             aec_ref_write_.store(w, std::memory_order_release);
-            aec_ref_trial_samples_ += static_cast<uint32_t>(task->pcm.size());
-            if (aec_ref_trial_samples_ >= 16000 * 5) {
-                static const int kDelays[] = {40, 100, 160, 220, 300, 400};
-                aec_ref_trial_samples_ = 0;
-                aec_ref_trial_index_ =
-                    (aec_ref_trial_index_ + 1) %
-                    static_cast<int>(sizeof(kDelays) / sizeof(kDelays[0]));
-                aec_ref_delay_ms_.store(kDelays[aec_ref_trial_index_]);
-                ESP_LOGI(TAG, "aec ref delay -> %d ms", kDelays[aec_ref_trial_index_]);
-            }
         }
 
         /* Update the last output time */

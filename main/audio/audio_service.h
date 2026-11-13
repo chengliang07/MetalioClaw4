@@ -118,6 +118,7 @@ public:
     void SetVoiceUploadMuted(bool muted) { voice_upload_muted_ = muted; }
     // 自供 AEC 参考：用实际播放的 PCM 替代模组参考通道
     void SetSelfAecReference(bool enable) { self_aec_ref_ = enable; }
+    void SetSelfAecDelayMs(int ms) { aec_ref_delay_ms_.store(ms); }
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
 
@@ -168,8 +169,6 @@ private:
     std::atomic<int> aec_ref_delay_ms_{40};
     std::atomic<uint32_t> aec_ref_write_{0};
     std::vector<int16_t> aec_ref_ring_;
-    uint32_t aec_ref_trial_samples_ = 0;
-    int aec_ref_trial_index_ = 0;
     std::atomic<int64_t> voice_active_until_us_{0};
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;

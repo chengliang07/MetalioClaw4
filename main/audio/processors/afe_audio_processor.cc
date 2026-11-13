@@ -117,6 +117,16 @@ void AfeAudioProcessor::Start() {
     xEventGroupSetBits(event_group_, PROCESSOR_RUNNING);
 }
 
+void AfeAudioProcessor::SetEchoGate(bool enable) {
+    echo_gate_ = enable;
+    if (enable) {
+        // 重新进入播放：前 60 帧（约 1 秒）只用于收敛回声基线，
+        // 期间不判定打断，避免播放起始阶段被回声误触发。
+        echo_gate_frames_ = 0;
+        echo_baseline_ = 0.0f;
+    }
+}
+
 void AfeAudioProcessor::Stop() {
     xEventGroupClearBits(event_group_, PROCESSOR_RUNNING);
     if (afe_data_ != nullptr) {
@@ -166,6 +176,7 @@ void AfeAudioProcessor::AudioProcessorTask() {
             }
         }
         if (diag_in_samples_ >= 16000) {
+          if (diag_enabled_) {
             const uint32_t mic_rms = static_cast<uint32_t>(
                 sqrt(static_cast<double>(diag_mic_sq_) / diag_in_samples_));
             const uint32_t ref_rms = static_cast<uint32_t>(
@@ -177,6 +188,7 @@ void AfeAudioProcessor::AudioProcessorTask() {
             ESP_LOGI(TAG, "echo diag: mic=%u ref=%u aec_out=%u vad=%d",
                      mic_rms, ref_rms, out_rms,
                      res->vad_state == VAD_SPEECH ? 1 : 0);
+          }
             diag_frames_ = 0;
             diag_mic_sq_ = 0;
             diag_ref_sq_ = 0;
@@ -197,14 +209,21 @@ void AfeAudioProcessor::AudioProcessorTask() {
                 sum += static_cast<uint64_t>(static_cast<int32_t>(out[i]) * out[i]);
             }
             frame_rms = sqrt(static_cast<double>(sum) / count);
-            if (echo_baseline_ < 100.0f) {
-                echo_baseline_ = frame_rms > 1.0f ? frame_rms : 100.0f;
-            }
-            if (speech && frame_rms < echo_baseline_ * 1.8f) {
+            if (echo_gate_frames_ < 60) {
+                // 收敛期：快速跟踪回声电平，期间一律不判定打断
+                ++echo_gate_frames_;
                 speech = false;
-            }
-            if (!speech) {
-                echo_baseline_ = echo_baseline_ * 0.99f + frame_rms * 0.01f;
+                echo_baseline_ = echo_baseline_ * 0.9f + frame_rms * 0.1f;
+                if (echo_baseline_ < 100.0f) {
+                    echo_baseline_ = 100.0f;
+                }
+            } else {
+                if (speech && frame_rms < echo_baseline_ * 1.8f) {
+                    speech = false;
+                }
+                if (!speech) {
+                    echo_baseline_ = echo_baseline_ * 0.99f + frame_rms * 0.01f;
+                }
             }
         }
 

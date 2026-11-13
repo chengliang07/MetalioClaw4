@@ -29,8 +29,12 @@ void DiagLogEnableUdp(bool enable);
 
 // 回声诊断：播放 TTS 时运行通信 AFE 并打印 mic/ref/aec_out 能量，
 // 但不上传音频、不触发 VAD 打断，用于确认参考通道是否有效。
-constexpr bool kEchoDiagnostics = true;
-constexpr bool kBargeInByVad = false;
+// 自供 AEC 参考 + 双讲门限已验证可用，这里切换为生产行为：
+// 播放 TTS 时仍运行通信 AFE，但正常上行语音，并据双讲门限触发打断。
+constexpr bool kEchoDiagnostics = false;
+constexpr bool kBargeInByVad = true;
+// 自供 AEC 参考延迟：实测 40~100ms 效果最好，固定使用，不再轮换
+constexpr int kSelfAecDelayMs = 40;
 
 #ifdef HAVE_LVGL
 #include "ota_screen.h"
@@ -536,6 +540,7 @@ void Application::Start() {
     /* Wait for the network to be ready */
     board.StartNetwork();
     // lwIP 就绪后再启用 UDP 诊断通道（提前创建 socket 会导致启动崩溃）
+    // kSelfAecDelayMs 为自供 AEC 参考延迟，由 SetDeviceState 在播放时设置
     DiagLogEnableUdp(true);
 
     // Update the status bar immediately to show the network state
@@ -908,17 +913,19 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateListening: {
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+            // 打断后进入聆听：继续保留通信 AFE 与自供参考，仅关闭打断门限；
+            // 恢复正常上行与人声判定，等待用户说话。
             audio_service_.SetVoiceUploadMuted(false);
             audio_service_.SetSelfAecReference(false);
             audio_service_.SetBargeInActive(false);
+            if (aec_mode_ == kAecOnDeviceSide) {
+                audio_service_.GetAudioProcessor()->SetEchoGate(false);
+            }
 
             // 从 Speaking（本地打断）进入 Listening 时 AFE 已在运行，
             // 仍需补发 listen start，否则服务端不会开始接收本轮语音。
             bool need_start_listening = (previous_state == kDeviceStateSpeaking);
-            // 打断后必须重开采集：清掉 AFE 里的回声残留、丢弃 120ms 预热、
-            // 并清空未播放完的 TTS（否则会听见自己的尾音而“自言自语”）。
-            if (!audio_service_.IsAudioProcessorRunning() ||
-                previous_state == kDeviceStateSpeaking) {
+            if (!audio_service_.IsAudioProcessorRunning()) {
                 need_start_listening = true;
                 audio_service_.EnableVoiceProcessing(true);
                 audio_service_.EnableWakeWordDetection(false);
@@ -935,12 +942,15 @@ void Application::SetDeviceState(DeviceState state) {
             // 自己的声音当成用户语音，导致每句话都被自己打断。
             // 因此播放 TTS 时只保留唤醒词引擎（带 AEC）：
             // 用户说“你好一丢”即可打断，且不会被任意回声误触发。
-            if (aec_mode_ == kAecOnDeviceSide && kEchoDiagnostics) {
-                // 诊断模式：AFE 照常运行但不上行、不打断，仅打印回声能量
-                audio_service_.SetVoiceUploadMuted(true);
-                audio_service_.SetBargeInActive(true);
+            if (aec_mode_ == kAecOnDeviceSide) {
+                // 生产模式：播放 TTS 时运行通信 AFE，自供 AEC 参考 + 双讲门限，
+                // 正常上行麦克风数据，并据本地 VAD 触发打断（边说边听）。
+                audio_service_.SetVoiceUploadMuted(false);
                 audio_service_.SetSelfAecReference(true);
+                audio_service_.SetSelfAecDelayMs(kSelfAecDelayMs);
+                audio_service_.SetBargeInActive(true);
                 audio_service_.GetAudioProcessor()->SetEchoGate(true);
+                barge_in_ready_at_us_ = esp_timer_get_time() + 700000;
                 audio_service_.EnableVoiceProcessing(true, false);
                 audio_service_.EnableWakeWordDetection(false);
             } else {
