@@ -742,6 +742,15 @@ void Application::MainEventLoop() {
             if (device_state_ == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
+            } else if (device_state_ == kDeviceStateSpeaking &&
+                       aec_mode_ == kAecOnDeviceSide &&
+                       esp_timer_get_time() >= barge_in_ready_at_us_ &&
+                       audio_service_.IsVoiceDetected()) {
+                // 本地 VAD 只会在 AEC 之后检测到外部语音时触发；
+                // 立即停止本轮 TTS 并转入聆听，不再依赖服务端判断。
+                ESP_LOGI(TAG, "barge-in detected, abort speaking");
+                AbortSpeaking(kAbortReasonNone);
+                SetListeningMode(kListeningModeAutoStop);
             }
         }
 
@@ -849,6 +858,7 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
+            audio_service_.SetBargeInActive(false);
             audio_service_.EnableVoiceProcessing(false);
             // 唤醒词仅在聊天/数字人会话内开启；桌面必须 Release 掉 AFE。
             if (voice_ui_active_) {
@@ -866,6 +876,7 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+            audio_service_.SetBargeInActive(false);
 
             // Make sure the audio processor is running
             if (!audio_service_.IsAudioProcessorRunning()) {
@@ -878,14 +889,15 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
-            // 打断开启时只运行通信 AFE（AEC 参考来自扬声器回采），
-            // 持续采集并上行，由服务端判断是否打断。
-            // 注意：不能再同时开启唤醒词 AFE，两套 AFE 常驻会重启；
-            // 也不能清空解码队列，否则本轮 TTS 会被直接掐断。
+            // 打断开启时运行通信 AFE：AEC 消除扬声器回声，本地 VAD
+            // 只把外部语音上行并触发打断。启动后短暂静默，避开首帧回声。
             audio_service_.EnableWakeWordDetection(false);
             if (aec_mode_ == kAecOnDeviceSide) {
+                audio_service_.SetBargeInActive(true);
+                barge_in_ready_at_us_ = esp_timer_get_time() + 600000;
                 audio_service_.EnableVoiceProcessing(true, false);
             } else {
+                audio_service_.SetBargeInActive(false);
                 audio_service_.EnableVoiceProcessing(false);
             }
             audio_service_.ResetDecoder();
@@ -1111,6 +1123,7 @@ void Application::PlaySound(const std::string_view& sound) {
 }
 
 void Application::SoftStopVoiceAudioPaths() {
+    audio_service_.SetBargeInActive(false);
     audio_service_.EnableWakeWordDetection(false);
     audio_service_.EnableVoiceProcessing(false);
 }

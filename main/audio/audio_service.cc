@@ -50,11 +50,18 @@ void AudioService::Initialize(AudioCodec* codec) {
 #endif
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
+        if (barge_in_active_ && !voice_detected_ &&
+            esp_timer_get_time() > voice_active_until_us_) {
+            // TTS 播放期间丢弃静音和回声，避免服务端把自己的声音当成用户输入。
+            return;
+        }
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
 
     audio_processor_->OnVadStateChange([this](bool speaking) {
         voice_detected_ = speaking;
+        // 语音结束后保留 400ms 尾巴，保证最后一个字能完整上行。
+        voice_active_until_us_ = esp_timer_get_time() + 400000;
         if (callbacks_.on_vad_change) {
             callbacks_.on_vad_change(speaking);
         }
@@ -502,6 +509,8 @@ void AudioService::ReleaseWakeWordEngine() {
 void AudioService::EnableVoiceProcessing(bool enable, bool reset_decoder) {
     ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
     if (enable) {
+        voice_detected_ = false;
+        voice_active_until_us_ = 0;
         if (!audio_processor_initialized_) {
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
             audio_processor_initialized_ = true;
@@ -519,6 +528,14 @@ void AudioService::EnableVoiceProcessing(bool enable, bool reset_decoder) {
     } else {
         audio_processor_->Stop();
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+    }
+}
+
+void AudioService::SetBargeInActive(bool active) {
+    barge_in_active_ = active;
+    if (active) {
+        voice_detected_ = false;
+        voice_active_until_us_ = 0;
     }
 }
 

@@ -56,9 +56,10 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     afe_config->agc_init = false;
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
 
-    // AEC 模块预创建，运行时由 EnableDeviceAec() 在 AEC/VAD 间切换（勿与唤醒词 AFE 同时常驻）
+    // AEC + VAD 均在创建时初始化；运行时动态启停会重分配 AFE 内部缓冲，
+    // 在 P4 + PSRAM 上容易触发重启。
     afe_config->aec_init = true;
-    afe_config->vad_init = false;
+    afe_config->vad_init = true;
 
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
@@ -92,6 +93,12 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
 }
 
 void AfeAudioProcessor::Start() {
+    // 重新进入采集时清掉上一轮的 VAD/音频残留，避免旧状态立即触发打断。
+    is_speaking_ = false;
+    output_buffer_.clear();
+    if (afe_data_ != nullptr) {
+        afe_iface_->reset_buffer(afe_data_);
+    }
     xEventGroupSetBits(event_group_, PROCESSOR_RUNNING);
 }
 
@@ -173,13 +180,8 @@ void AfeAudioProcessor::EnableDeviceAec(bool enable) {
         ESP_LOGE(TAG, "EnableDeviceAec: AFE not initialized");
         return;
     }
-    if (enable) {
-        // VC 配置下 AEC 已在建实例时启用；动态 enable/disable 会重分配
-        // AFE 内部缓冲，在 P4 + PSRAM 上容易触发重启。
-        afe_iface_->disable_vad(afe_data_);
-    } else {
-        // 保留 AEC，关闭 VAD 即由上层按能量阈值决定是否上行音频，
-        // 不销毁回声参考通道，打断时才能继续采集。
-        afe_iface_->disable_vad(afe_data_);
-    }
+    // AEC/VAD 已随实例常驻。这里只保留接口兼容，不再动态 enable/disable：
+    // 动态切换会重分配 PSRAM 缓冲并导致重启。打断开关由上层决定是否
+    // 使用 VAD 结果和上行门控。
+    (void)enable;
 }
