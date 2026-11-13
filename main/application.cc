@@ -925,7 +925,10 @@ void Application::SetDeviceState(DeviceState state) {
             // 从 Speaking（本地打断）进入 Listening 时 AFE 已在运行，
             // 仍需补发 listen start，否则服务端不会开始接收本轮语音。
             bool need_start_listening = (previous_state == kDeviceStateSpeaking);
-            if (!audio_service_.IsAudioProcessorRunning()) {
+            if (previous_state == kDeviceStateSpeaking ||
+                !audio_service_.IsAudioProcessorRunning()) {
+                // 打断后必须清空未播放完的 TTS 并重置 AFE：
+                // 否则设备会继续放自己的尾音，服务端只能听到回声，识别不到用户。
                 need_start_listening = true;
                 audio_service_.EnableVoiceProcessing(true);
                 audio_service_.EnableWakeWordDetection(false);

@@ -59,8 +59,32 @@ void AudioService::Initialize(AudioCodec* codec) {
         }
         if (barge_in_active_ && !voice_detected_ &&
             esp_timer_get_time() > voice_active_until_us_) {
-            // TTS 播放期间丢弃静音和回声，避免服务端把自己的声音当成用户输入。
+            // TTS 播放期间不上传回声，但保留最后 300ms 作为打断预录，
+            // 等 VAD 确认外部人声后补发，避免打断句子的开头被吃掉。
+            {
+                std::lock_guard<std::mutex> lock(preroll_mutex_);
+                barge_in_preroll_samples_ += data.size();
+                barge_in_preroll_.push_back(std::move(data));
+                while (barge_in_preroll_samples_ > 4800 &&
+                       !barge_in_preroll_.empty()) {
+                    barge_in_preroll_samples_ -= barge_in_preroll_.front().size();
+                    barge_in_preroll_.pop_front();
+                }
+            }
             return;
+        }
+        if (barge_in_active_ && voice_detected_ && !preroll_flushed_) {
+            preroll_flushed_ = true;
+            std::deque<std::vector<int16_t>> preroll;
+            {
+                std::lock_guard<std::mutex> lock(preroll_mutex_);
+                preroll.swap(barge_in_preroll_);
+                barge_in_preroll_samples_ = 0;
+            }
+            for (auto& frame : preroll) {
+                PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue,
+                                      std::move(frame));
+            }
         }
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
@@ -568,6 +592,10 @@ void AudioService::SetBargeInActive(bool active) {
     if (active) {
         voice_detected_ = false;
         voice_active_until_us_ = 0;
+        std::lock_guard<std::mutex> lock(preroll_mutex_);
+        barge_in_preroll_.clear();
+        barge_in_preroll_samples_ = 0;
+        preroll_flushed_ = false;
     }
 }
 

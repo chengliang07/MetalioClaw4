@@ -170,6 +170,11 @@ private:
     std::atomic<uint32_t> aec_ref_write_{0};
     std::vector<int16_t> aec_ref_ring_;
     std::atomic<int64_t> voice_active_until_us_{0};
+    // 打断预录：缓存播放期间被丢弃的最近 300ms 音频，确认人声后补发
+    std::mutex preroll_mutex_;
+    std::deque<std::vector<int16_t>> barge_in_preroll_;
+    size_t barge_in_preroll_samples_ = 0;
+    bool preroll_flushed_ = false;
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;
     std::mutex wake_word_mutex_;
