@@ -765,6 +765,7 @@ void Application::MainEventLoop() {
                 led->OnStateChanged();
             } else if (device_state_ == kDeviceStateSpeaking &&
                        aec_mode_ == kAecOnDeviceSide &&
+                       audio_service_.IsAudioProcessorRunning() &&
                        esp_timer_get_time() >= barge_in_ready_at_us_ &&
                        audio_service_.IsVoiceDetected()) {
                 // 本地 VAD 只会在 AEC 之后检测到外部语音时触发；
@@ -915,18 +916,16 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
-            // 打断开启时运行通信 AFE：AEC 消除扬声器回声，本地 VAD
-            // 只把外部语音上行并触发打断。启动后短暂静默，避开首帧回声。
-            audio_service_.EnableWakeWordDetection(false);
+            // 播放 TTS 时只保留唤醒词 AFE（带 AEC），不再同时跑通信 AFE。
+            // 这样不会把扬声器回声上行，也不会被 VAD 误判成用户说话；
+            // 用户说“你好一丢”即可打断当前回答。
+            audio_service_.SetBargeInActive(false);
+            audio_service_.EnableVoiceProcessing(false);
             if (aec_mode_ == kAecOnDeviceSide) {
-                audio_service_.SetBargeInActive(true);
-                barge_in_ready_at_us_ = esp_timer_get_time() + 600000;
-                audio_service_.EnableVoiceProcessing(true, false);
+                audio_service_.EnableWakeWordDetection(true);
             } else {
-                audio_service_.SetBargeInActive(false);
-                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(false);
             }
-            audio_service_.ResetDecoder();
             break;
         default:
             // Do nothing

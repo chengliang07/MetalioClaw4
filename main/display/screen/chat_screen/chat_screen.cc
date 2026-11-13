@@ -1274,6 +1274,16 @@ void ChatScreen::PrepareTemporaryLeave() {
     schedule_voice_ui_stop();
 }
 
+void ChatScreen::ResumeAfterTemporaryLeave() {
+    s_keep_on_unload = false;
+    if (s_ui.screen == nullptr) {
+        return;
+    }
+    // 本页没有被卸载，不会触发 LIFE_CYCLE_LOAD，必须显式恢复语音会话。
+    schedule_voice_ui_start();
+    RefreshDeviceState();
+}
+
 lv_obj_t* ChatScreen::CurrentScreen() {
     return s_ui.screen;
 }

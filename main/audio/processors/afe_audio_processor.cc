@@ -39,8 +39,10 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
     
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
     afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
-    afe_config->vad_mode = VAD_MODE_0;
-    afe_config->vad_min_noise_ms = 100;
+    // 打断开启时 AFE 与 TTS 同时运行。VAD 用最不敏感的档位，
+    // 避免扬声器残留回声被当成用户说话而反复自打断。
+    afe_config->vad_mode = VAD_MODE_3;
+    afe_config->vad_min_noise_ms = 300;
     if (vad_model_name != nullptr) {
         afe_config->vad_model_name = vad_model_name;
     }
@@ -95,6 +97,7 @@ void AfeAudioProcessor::Feed(std::vector<int16_t>&& data) {
 void AfeAudioProcessor::Start() {
     // 重新进入采集时清掉上一轮的 VAD/音频残留，避免旧状态立即触发打断。
     is_speaking_ = false;
+    speech_frames_ = 0;
     output_buffer_.clear();
     if (afe_data_ != nullptr) {
         afe_iface_->reset_buffer(afe_data_);
@@ -141,14 +144,22 @@ void AfeAudioProcessor::AudioProcessorTask() {
             continue;
         }
 
-        // VAD state change
+        // VAD state change：连续语音约 300ms 才上报，滤掉短促回声。
         if (vad_state_change_callback_) {
-            if (res->vad_state == VAD_SPEECH && !is_speaking_) {
-                is_speaking_ = true;
-                vad_state_change_callback_(true);
+            if (res->vad_state == VAD_SPEECH) {
+                if (speech_frames_ < 20) {
+                    speech_frames_++;
+                }
+                if (!is_speaking_ && speech_frames_ >= 10) {
+                    is_speaking_ = true;
+                    vad_state_change_callback_(true);
+                }
             } else if (res->vad_state == VAD_SILENCE && is_speaking_) {
+                speech_frames_ = 0;
                 is_speaking_ = false;
                 vad_state_change_callback_(false);
+            } else if (res->vad_state == VAD_SILENCE) {
+                speech_frames_ = 0;
             }
         }
 

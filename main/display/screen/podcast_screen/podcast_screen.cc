@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "application.h"
+#include "chat_screen/chat_screen.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -439,6 +440,9 @@ void ReturnHome() {
         target = HomeScreen::Create();
     }
     lv_screen_load(target);
+    if (target == ChatScreen::CurrentScreen()) {
+        ChatScreen::ResumeAfterTemporaryLeave();
+    }
     if (old_screen != nullptr && old_screen != target) {
         lv_obj_delete_async(old_screen);
     }

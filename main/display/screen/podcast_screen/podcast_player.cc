@@ -252,30 +252,48 @@ bool OpenAudioStream(const std::string& url, esp_http_client_handle_t& client,
         cfg.timeout_ms = 15000;
         cfg.buffer_size = 4096;
         cfg.buffer_size_tx = 1024;
-        client = esp_http_client_init(&cfg);
-        if (client == nullptr) {
-            error = "创建网络连接失败";
-            return false;
-        }
         const std::string device_token = PodcastClient::DeviceToken();
-        if (!device_token.empty()) {
-            const std::string authorization = "Bearer " + device_token;
-            esp_http_client_set_header(client, "Authorization",
-                                       authorization.c_str());
-        }
-        if (range_start > 0) {
-            char range[40] = {};
-            snprintf(range, sizeof(range), "bytes=%lld-",
-                     static_cast<long long>(range_start));
-            esp_http_client_set_header(client, "Range", range);
-        }
-        if (esp_http_client_open(client, 0) != ESP_OK) {
-            char detail[48] = {};
-            snprintf(detail, sizeof(detail), "连接音频失败 %d",
-                     esp_http_client_get_errno(client));
-            error = detail;
+        bool opened = false;
+        int last_errno = 0;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            client = esp_http_client_init(&cfg);
+            if (client == nullptr) {
+                error = "创建网络连接失败";
+                return false;
+            }
+            if (!device_token.empty()) {
+                const std::string authorization = "Bearer " + device_token;
+                esp_http_client_set_header(client, "Authorization",
+                                           authorization.c_str());
+            }
+            if (range_start > 0) {
+                char range[40] = {};
+                snprintf(range, sizeof(range), "bytes=%lld-",
+                         static_cast<long long>(range_start));
+                esp_http_client_set_header(client, "Range", range);
+            }
+            if (esp_http_client_open(client, 0) == ESP_OK) {
+                opened = true;
+                break;
+            }
+            last_errno = esp_http_client_get_errno(client);
+            ESP_LOGW(TAG,
+                     "audio open failed attempt=%d errno=%d internal=%u psram=%u",
+                     attempt + 1, last_errno,
+                     static_cast<unsigned>(
+                         heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                     static_cast<unsigned>(
+                         heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
             esp_http_client_cleanup(client);
             client = nullptr;
+            if (attempt < 2) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+        }
+        if (!opened) {
+            char detail[48] = {};
+            snprintf(detail, sizeof(detail), "连接音频失败 %d", last_errno);
+            error = detail;
             return false;
         }
         esp_http_client_fetch_headers(client);
