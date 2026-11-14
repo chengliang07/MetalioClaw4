@@ -1189,9 +1189,15 @@ void Application::SetAecMode(AecMode mode) {
 }
 
 void Application::ApplyInterruptPreferenceFromNvs() {
-    Settings settings("audio");
+    Settings settings("audio", true);
     // 播放期间的“打断”依赖唤醒词 AFE：把实际播放 PCM 注入 R 参考通道，
     // 说“你好一丢”即可停 TTS 并进入聆听；不做麦克风持续上行。
+    // 2.0.96 一次性迁移：旧版可能把 interrupt 存成 false，首次启动强制恢复。
+    Settings migration("firmware", true);
+    if (!migration.GetBool("interrupt_v296", false)) {
+        settings.SetBool("interrupt", true);
+        migration.SetBool("interrupt_v296", true);
+    }
     const bool interrupt_on = settings.GetBool("interrupt", true);
     aec_mode_ = interrupt_on ? kAecOnDeviceSide : kAecOff;
     audio_service_.EnableDeviceAec(aec_mode_ == kAecOnDeviceSide);
