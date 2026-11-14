@@ -106,9 +106,6 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
         afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
     afe_config->aec_init = codec_->input_reference();
     afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
-    afe_config->vad_init = true;
-    afe_config->vad_mode = VAD_MODE_3;
-    afe_config->vad_min_noise_ms = 120;
     afe_config->afe_perferred_core = 1;
     afe_config->afe_perferred_priority = 1;
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
@@ -188,7 +185,8 @@ void AfeWakeWord::Start() {
     afe_iface_->enable_wakenet(afe_data_);
     speech_frames_ = 0;
     is_speaking_ = false;
-    barge_in_rms_baseline_ = 100;
+    barge_in_warmup_frames_ = 0;
+    barge_in_rms_baseline_ = 500;
     xEventGroupSetBits(event_group_, DETECTION_RUNNING_EVENT);
 }
 
@@ -196,6 +194,7 @@ void AfeWakeWord::Stop() {
     xEventGroupClearBits(event_group_, DETECTION_RUNNING_EVENT);
     speech_frames_ = 0;
     is_speaking_ = false;
+    barge_in_warmup_frames_ = 0;
     std::lock_guard<std::mutex> lock(afe_mutex_);
     if (afe_data_ != nullptr && afe_iface_ != nullptr) {
         afe_iface_->disable_wakenet(afe_data_);
@@ -272,11 +271,13 @@ void AfeWakeWord::AudioDetectionTask() {
             }
             const uint32_t frame_rms = static_cast<uint32_t>(
                 sqrt(static_cast<double>(sum) / count));
-            bool speech = res->vad_state == VAD_SPEECH;
-            // 合成参考只能部分消回声；要求 AEC 输出能量明显高于当前基线，
-            // 且连续至少两帧，才认定用户插话。
-            if (frame_rms < barge_in_rms_baseline_ * 3 / 2) {
-                speech = false;
+            // SR AFE 不保证输出可靠 vad_state；用 AEC 后能量相对基线的
+            // 持续突增作为插话证据，避免依赖未启用的 VAD 模型。
+            const bool speech = barge_in_warmup_frames_ >= 10 &&
+                                frame_rms > barge_in_rms_baseline_ * 2 &&
+                                frame_rms > 300;
+            if (barge_in_warmup_frames_ < 10) {
+                ++barge_in_warmup_frames_;
             }
             if (speech) {
                 if (speech_frames_ < 3) {
@@ -294,10 +295,10 @@ void AfeWakeWord::AudioDetectionTask() {
                 speech_frames_ = 0;
                 is_speaking_ = false;
             }
-            const uint32_t next = frame_rms > barge_in_rms_baseline_
-                ? (barge_in_rms_baseline_ * 9 + frame_rms) / 10
-                : (barge_in_rms_baseline_ * 99 + frame_rms) / 100;
-            barge_in_rms_baseline_ = next < 100 ? 100 : next;
+            if (frame_rms < barge_in_rms_baseline_) {
+                const uint32_t next = (barge_in_rms_baseline_ * 99 + frame_rms) / 100;
+                barge_in_rms_baseline_ = next < 100 ? 100 : next;
+            }
         }
 
         if (res->wakeup_state == WAKENET_DETECTED) {

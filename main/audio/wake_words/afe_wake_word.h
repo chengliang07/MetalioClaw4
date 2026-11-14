@@ -53,6 +53,7 @@ private:
     std::atomic<bool> barge_in_vad_enabled_{false};
     int speech_frames_ = 0;
     bool is_speaking_ = false;
+    int barge_in_warmup_frames_ = 0;
     AudioCodec* codec_ = nullptr;
     std::string last_detected_wake_word_;
 
