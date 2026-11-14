@@ -6,6 +6,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <opus_encoder.h>
+#include <cmath>
 #include "application.h"
 
 extern Application* g_barge_in_app;
