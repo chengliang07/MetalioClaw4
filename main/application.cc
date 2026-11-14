@@ -669,15 +669,25 @@ void Application::Start() {
                     (user_text.find("打开") != std::string::npos ||
                      user_text.find("一丢") != std::string::npos ||
                      user_text.find("听") != std::string::npos);
-                if (wants_podcast) {
-                    Schedule([this]() {
-                        ESP_LOGI(TAG, "local intent: open podcast");
+                const bool wants_english =
+                    user_text.find("英语") != std::string::npos &&
+                    (user_text.find("打开") != std::string::npos ||
+                     user_text.find("一丢") != std::string::npos ||
+                     user_text.find("复习") != std::string::npos);
+                if (wants_podcast || wants_english) {
+                    Schedule([this, wants_podcast]() {
+                        ESP_LOGI(TAG, "local intent: open %s",
+                                 wants_podcast ? "podcast" : "english");
                         if (device_state_ == kDeviceStateSpeaking) {
                             AbortSpeaking(kAbortReasonNone);
                         } else if (protocol_ && protocol_->IsAudioChannelOpened()) {
                             protocol_->SendStopListening();
                         }
-                        HomeScreen::RequestOpenPodcastFromCurrentScreen();
+                        if (wants_podcast) {
+                            HomeScreen::RequestOpenPodcastFromCurrentScreen();
+                        } else {
+                            HomeScreen::RequestOpenEnglishFromCurrentScreen();
+                        }
                     });
                 }
 #endif

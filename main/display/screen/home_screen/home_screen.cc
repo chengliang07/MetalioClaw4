@@ -29,6 +29,7 @@
 #include "camera_screen/camera_screen.h"
 #include "chat_screen/chat_screen.h"
 #include "digital_people_screen/digital_people_screen.h"
+#include "english_screen/english_screen.h"
 #include "game_2048_screen/game_2048_screen.h"
 #include "gps_screen/gps_screen.h"
 #include "level_screen/level_screen.h"
@@ -217,6 +218,11 @@ void chat_lifecycle_cb(screen_lifecycle_event_t event) {
 void podcast_lifecycle_cb(screen_lifecycle_event_t event) {
     PwrKey_OnScreenLifecycle("podcast", event);
     PodcastScreen::LifecycleCallback(event);
+}
+
+void english_lifecycle_cb(screen_lifecycle_event_t event) {
+    PwrKey_OnScreenLifecycle("english", event);
+    EnglishScreen::LifecycleCallback(event);
 }
 
 void digital_people_lifecycle_cb(screen_lifecycle_event_t event) {
@@ -526,6 +532,16 @@ void LaunchPodcast(screen_lifecycle_cb_t lifecycle_cb) {
     }
 }
 
+void LaunchEnglish(screen_lifecycle_cb_t lifecycle_cb) {
+    lv_obj_t* old_scr = lv_screen_active();
+    lv_obj_t* app = EnglishScreen::Create(HomeScreen::Create());
+    screen_attach_lifecycle(app, lifecycle_cb);
+    lv_screen_load(app);
+    if (old_scr != nullptr && old_scr != app) {
+        lv_obj_delete_async(old_scr);
+    }
+}
+
 void OpenPodcastFromCurrentAsync(void* /*arg*/) {
     lv_obj_t* origin = lv_screen_active();
     if (origin == nullptr) {
@@ -541,6 +557,22 @@ void OpenPodcastFromCurrentAsync(void* /*arg*/) {
     screen_attach_lifecycle(podcast, podcast_lifecycle_cb);
     lv_screen_load(podcast);
     // 不删除来源屏：返回时必须回到同一个学伴页面。
+}
+
+void OpenEnglishFromCurrentAsync(void* /*arg*/) {
+    lv_obj_t* origin = lv_screen_active();
+    if (origin == nullptr) {
+        return;
+    }
+    lv_obj_t* english = EnglishScreen::Create(origin);
+    if (english == nullptr) {
+        return;
+    }
+    if (origin == ChatScreen::CurrentScreen()) {
+        ChatScreen::PrepareTemporaryLeave();
+    }
+    screen_attach_lifecycle(english, english_lifecycle_cb);
+    lv_screen_load(english);
 }
 
 void OpenChatAsync(void* /*arg*/) {
@@ -848,6 +880,7 @@ void info_lifecycle_cb(screen_lifecycle_event_t event) {
 constexpr AppEntry kApps[] = {
     {"chat",           "一丢学伴", LaunchChat,          chat_lifecycle_cb,          true},
     {"radio",          "一丢播客", LaunchPodcast,       podcast_lifecycle_cb,       true},
+    {"music",          "一丢英语", LaunchEnglish,       english_lifecycle_cb,       true},
     {"wifi",           "网络配置", LaunchWifi,          wifi_lifecycle_cb,          false},
     {"settings",       "设置",     LaunchSettings,      settings_lifecycle_cb,      false},
     // {"digital_people", "数字人",   LaunchDigitalPeople, digital_people_lifecycle_cb, true},
@@ -2554,6 +2587,12 @@ void HomeScreen::SetIdleStandbyMinutes(int minutes) {
 void HomeScreen::RequestOpenPodcastFromCurrentScreen() {
     if (lv_async_call(OpenPodcastFromCurrentAsync, nullptr) != LV_RESULT_OK) {
         ESP_LOGW(TAG_HOME, "open podcast request dropped");
+    }
+}
+
+void HomeScreen::RequestOpenEnglishFromCurrentScreen() {
+    if (lv_async_call(OpenEnglishFromCurrentAsync, nullptr) != LV_RESULT_OK) {
+        ESP_LOGW(TAG_HOME, "open english request dropped");
     }
 }
 
