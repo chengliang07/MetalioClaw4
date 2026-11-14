@@ -259,9 +259,6 @@ bool is_device_activated();  // 前向声明
 void delete_timer(lv_timer_t*& timer);
 
 void schedule_voice_ui_start() {
-    if (s_voice_ui_held) {
-        return;
-    }
     s_voice_ui_held = true;
     Application::GetInstance().SetVoiceUiDesired(true);
 }

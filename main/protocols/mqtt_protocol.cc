@@ -196,6 +196,9 @@ void MqttProtocol::CloseAudioChannel() {
 }
 
 bool MqttProtocol::OpenAudioChannel() {
+    if (IsAudioChannelOpened()) {
+        CloseAudioChannel();
+    }
     if (mqtt_ == nullptr || !mqtt_->IsConnected()) {
         ESP_LOGI(TAG, "MQTT is not connected, try to connect now");
         if (!StartMqttClient(true)) {

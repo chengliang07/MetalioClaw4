@@ -373,6 +373,7 @@ void Application::ToggleChatState() {
             if (!protocol_->IsAudioChannelOpened()) {
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    SetDeviceState(kDeviceStateIdle);
                     return;
                 }
             }
@@ -420,6 +421,7 @@ void Application::StartListening() {
             if (!protocol_->IsAudioChannelOpened()) {
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    SetDeviceState(kDeviceStateIdle);
                     return;
                 }
             }
@@ -588,6 +590,9 @@ void Application::Start() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
+        if (aborted_) {
+            return;
+        }
         if (device_state_ == kDeviceStateSpeaking) {
             packet->generation = audio_service_.GetPlaybackGeneration();
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
@@ -605,6 +610,8 @@ void Application::Start() {
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
+            abort_suppress_until_us_ = 0;
+            aborted_ = false;
             SetDeviceState(kDeviceStateIdle);
         });
     });
@@ -864,6 +871,7 @@ void Application::OnWakeWordDetected() {
                 if (voice_ui_active_) {
                     audio_service_.EnableWakeWordDetection(true);
                 }
+                SetDeviceState(kDeviceStateIdle);
                 return;
             }
         }
@@ -1124,6 +1132,7 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
                 if (voice_ui_active_) {
                     audio_service_.EnableWakeWordDetection(true);
                 }
+                SetDeviceState(kDeviceStateIdle);
                 return;
             }
         }
@@ -1352,6 +1361,11 @@ bool Application::TryEnableWakeWordForVoiceUi() {
 void Application::SetVoiceUiDesired(bool desired) {
     if (voice_ui_desired_ == desired) {
         ESP_LOGD(TAG, "voice UI desired unchanged (%d)", desired ? 1 : 0);
+        if (desired) {
+            abort_suppress_until_us_ = 0;
+            aborted_ = false;
+            Schedule([this]() { SyncVoiceUiSession(); });
+        }
         return;
     }
     voice_ui_desired_ = desired;
@@ -1372,6 +1386,8 @@ void Application::SetVoiceUiDesired(bool desired) {
     }
 
     CancelVoiceUiHardRelease();
+    abort_suppress_until_us_ = 0;
+    aborted_ = false;
     Schedule([this]() { SyncVoiceUiSession(); });
 }
 
