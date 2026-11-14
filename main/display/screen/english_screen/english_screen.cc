@@ -133,15 +133,6 @@ lv_obj_t* CreateButton(lv_obj_t* parent, int32_t x, int32_t y,
     return button;
 }
 
-void ConfigureListContent() {
-    lv_obj_set_style_pad_all(s_ui.content, 12, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(s_ui.content, 10, LV_PART_MAIN);
-    lv_obj_set_flex_flow(s_ui.content, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_ui.content, LV_FLEX_ALIGN_START,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_scrollbar_mode(s_ui.content, LV_SCROLLBAR_MODE_AUTO);
-}
-
 void ConfigurePageContent() {
     lv_obj_set_style_bg_color(s_ui.content,
                               lv_color_hex(kColorPanel), LV_PART_MAIN);

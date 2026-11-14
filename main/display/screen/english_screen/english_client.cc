@@ -70,7 +70,7 @@ bool LoadConfig(std::string& api_base, std::string& device_token,
 }
 
 bool HttpRequest(const char* method, const std::string& url,
-                 const std::string& device_token, const std::string& content,
+                 const std::string& device_token, std::string content,
                  std::string& body, int& status, std::string& error) {
     std::lock_guard<std::mutex> lock(s_http_mutex);
     auto network = Board::GetInstance().GetNetwork();
@@ -90,7 +90,7 @@ bool HttpRequest(const char* method, const std::string& url,
     http->SetHeader("Authorization", "Bearer " + device_token);
     if (!content.empty()) {
         http->SetHeader("Content-Type", "application/json");
-        http->SetContent(content);
+        http->SetContent(std::move(content));
     }
     if (!http->Open(method, url)) {
         error = "连接英语服务失败";
