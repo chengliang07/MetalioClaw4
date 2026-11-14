@@ -862,8 +862,8 @@ void on_interrupt_clicked() {
     }
     auto& app = Application::GetInstance();
     const bool currently_on = app.GetAecMode() != kAecOff;
-    // 打断走服务端 AEC + 实时打断（设备持续上行，由服务端消回声并下发 abort）。
-    const AecMode next = currently_on ? kAecOff : kAecOnServerSide;
+    // 播放期间保持唤醒词 AFE 的本地参考，以“你好一丢”打断本轮回答。
+    const AecMode next = currently_on ? kAecOff : kAecOnDeviceSide;
     ESP_LOGI(TAG, "echo protection -> %s", currently_on ? "off" : "on");
     app.SetAecMode(next);
 }

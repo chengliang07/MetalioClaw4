@@ -911,6 +911,8 @@ void Application::SetDeviceState(DeviceState state) {
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
             audio_service_.SetBargeInActive(false);
+            audio_service_.SetVoiceUploadMuted(false);
+            audio_service_.SetSelfAecReference(false);
             audio_service_.EnableVoiceProcessing(false);
             // 唤醒词仅在聊天/数字人会话内开启；桌面必须 Release 掉 AFE。
             if (voice_ui_active_) {
@@ -963,9 +965,11 @@ void Application::SetDeviceState(DeviceState state) {
             if (aec_mode_ != kAecOff) {
                 // 本机 AEC 参考通道无效（ref 恒为 0），全双工上行必然把扬声器
                 // 回声送给服务端并触发误打断。因此播放 TTS 时不上行麦克风，
-                // 只保留唤醒词引擎：说“你好一丢”即可打断本轮回答。
+                // 但唤醒词 AFE 同样依赖 R 通道做 AEC；把实际播放 PCM 注入参考
+                // 通道，外放时说“你好一丢”才能被检测到并打断本轮回答。
                 audio_service_.SetVoiceUploadMuted(true);
-                audio_service_.SetSelfAecReference(false);
+                audio_service_.SetSelfAecReference(true);
+                audio_service_.SetSelfAecDelayMs(kSelfAecDelayMs);
                 audio_service_.GetAudioProcessor()->SetEchoGate(false);
                 audio_service_.SetBargeInActive(false);
                 barge_in_ready_at_us_ = esp_timer_get_time() + 1200000;
@@ -1186,12 +1190,12 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::ApplyInterruptPreferenceFromNvs() {
     Settings settings("audio");
-    // 无记录时默认关回声保护，避免上电即全双工
-    const bool interrupt_on = settings.GetBool("interrupt", false);
-    // 服务端 AEC：设备持续上行、由服务端做回声抵消与实时打断（需服务端支持）。
-    aec_mode_ = interrupt_on ? kAecOnServerSide : kAecOff;
-    audio_service_.EnableDeviceAec(false);
-    ESP_LOGI(TAG, "echo protection preference: %s (server AEC)", interrupt_on ? "on" : "off");
+    // 播放期间的“打断”依赖唤醒词 AFE：把实际播放 PCM 注入 R 参考通道，
+    // 说“你好一丢”即可停 TTS 并进入聆听；不做麦克风持续上行。
+    const bool interrupt_on = settings.GetBool("interrupt", true);
+    aec_mode_ = interrupt_on ? kAecOnDeviceSide : kAecOff;
+    audio_service_.EnableDeviceAec(aec_mode_ == kAecOnDeviceSide);
+    ESP_LOGI(TAG, "interrupt preference: %s (wake-word AEC)", interrupt_on ? "on" : "off");
 }
 
 void Application::PlaySound(const std::string_view& sound) {
