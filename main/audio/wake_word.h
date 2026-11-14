@@ -23,6 +23,8 @@ public:
     virtual void EncodeWakeWordData() = 0;
     virtual bool GetWakeWordOpus(std::vector<uint8_t>& opus) = 0;
     virtual const std::string& GetLastDetectedWakeWord() const = 0;
+    virtual void SetBargeInVadCallback(std::function<void()> callback) {}
+    virtual std::vector<std::vector<int16_t>> TakeBargeInPreroll() { return {}; }
 };
 
 #endif

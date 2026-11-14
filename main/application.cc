@@ -11,6 +11,7 @@
 #include "settings.h"
 
 #include <cstring>
+#include <atomic>
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <cJSON.h>
@@ -35,6 +36,8 @@ constexpr bool kEchoDiagnostics = false;
 constexpr bool kBargeInByVad = true;
 // 自供 AEC 参考延迟：实测 40~100ms 效果最好，固定使用，不再轮换
 constexpr int kSelfAecDelayMs = 40;
+std::atomic<bool> g_barge_in_pending{false};
+Application* g_barge_in_app = nullptr;
 
 #ifdef HAVE_LVGL
 #include "ota_screen.h"
@@ -586,6 +589,7 @@ void Application::Start() {
     });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
         if (device_state_ == kDeviceStateSpeaking) {
+            packet->generation = audio_service_.GetPlaybackGeneration();
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -765,6 +769,7 @@ void Application::MainEventLoop() {
             MAIN_EVENT_SEND_AUDIO |
             MAIN_EVENT_WAKE_WORD_DETECTED |
             MAIN_EVENT_VAD_CHANGE |
+            MAIN_EVENT_BARGE_IN |
             MAIN_EVENT_CLOCK_TICK |
             MAIN_EVENT_ERROR, pdTRUE, pdFALSE, portMAX_DELAY);
 
@@ -784,6 +789,22 @@ void Application::MainEventLoop() {
         if (bits & MAIN_EVENT_WAKE_WORD_DETECTED) {
             if (voice_ui_active_) {
                 OnWakeWordDetected();
+            }
+        }
+
+        if (bits & MAIN_EVENT_BARGE_IN) {
+            if (device_state_ == kDeviceStateSpeaking &&
+                aec_mode_ != kAecOff && kBargeInByVad &&
+                g_barge_in_pending.exchange(false, std::memory_order_relaxed)) {
+                ESP_LOGI(TAG, "local VAD barge-in, abort speaking");
+                audio_service_.SetVoiceUploadMuted(false);
+                audio_service_.SetBargeInVad(false, nullptr, true);
+                audio_service_.AbortPlaybackGeneration();
+                AbortSpeaking(kAbortReasonNone);
+                SetListeningMode(kListeningModeAutoStop);
+                if (protocol_) {
+                    protocol_->SendStartListening(listening_mode_);
+                }
             }
         }
 
@@ -866,8 +887,14 @@ void Application::OnWakeWordDetected() {
         // 打断开启时，播放中听到唤醒词立即停止本轮回答并进入聆听。
         if (aec_mode_ != kAecOff) {
             ESP_LOGI(TAG, "wake word during speaking, interrupt");
+            audio_service_.SetVoiceUploadMuted(false);
+            audio_service_.SetBargeInVad(false, nullptr, true);
+            audio_service_.AbortPlaybackGeneration();
             AbortSpeaking(kAbortReasonNone);
             SetListeningMode(kListeningModeAutoStop);
+            if (protocol_) {
+                protocol_->SendStartListening(listening_mode_);
+            }
         }
     } else if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
@@ -911,6 +938,7 @@ void Application::SetDeviceState(DeviceState state) {
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
             audio_service_.SetBargeInActive(false);
+            audio_service_.SetBargeInVad(false, nullptr);
             audio_service_.SetVoiceUploadMuted(false);
             audio_service_.SetSelfAecReference(false);
             audio_service_.EnableVoiceProcessing(false);
@@ -933,6 +961,7 @@ void Application::SetDeviceState(DeviceState state) {
             // 打断后进入聆听：继续保留通信 AFE 与自供参考，仅关闭打断门限；
             // 恢复正常上行与人声判定，等待用户说话。
             audio_service_.SetVoiceUploadMuted(false);
+            audio_service_.SetBargeInVad(false, nullptr);
             audio_service_.SetSelfAecReference(false);
             audio_service_.SetBargeInActive(false);
             if (aec_mode_ == kAecOnDeviceSide) {
@@ -975,6 +1004,11 @@ void Application::SetDeviceState(DeviceState state) {
                 barge_in_ready_at_us_ = esp_timer_get_time() + 1200000;
                 audio_service_.EnableVoiceProcessing(false);
                 audio_service_.EnableWakeWordDetection(true);
+                if (kBargeInByVad) {
+                    g_barge_in_pending.store(false, std::memory_order_relaxed);
+                    g_barge_in_app = this;
+                    audio_service_.SetBargeInVad(true, nullptr);
+                }
             } else {
                 audio_service_.SetVoiceUploadMuted(false);
                 audio_service_.SetSelfAecReference(false);
@@ -982,6 +1016,7 @@ void Application::SetDeviceState(DeviceState state) {
                 audio_service_.SetBargeInActive(false);
                 audio_service_.EnableVoiceProcessing(false);
                 audio_service_.EnableWakeWordDetection(false);
+                audio_service_.SetBargeInVad(false, nullptr);
             }
             break;
         default:

@@ -16,6 +16,7 @@
 #include <functional>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 
 #include "audio_codec.h"
 #include "wake_word.h"
@@ -35,6 +36,8 @@ public:
     void EncodeWakeWordData() override;
     bool GetWakeWordOpus(std::vector<uint8_t>& opus) override;
     const std::string& GetLastDetectedWakeWord() const override { return last_detected_wake_word_; }
+    void SetBargeInVadCallback(std::function<void()> callback) override;
+    std::vector<std::vector<int16_t>> TakeBargeInPreroll() override;
 
 private:
     srmodel_list_t* models_ = nullptr;
@@ -46,6 +49,10 @@ private:
     EventGroupHandle_t event_group_;
     TaskHandle_t detect_task_ = nullptr;
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;
+    std::function<void()> barge_in_vad_callback_;
+    std::atomic<bool> barge_in_vad_enabled_{false};
+    int speech_frames_ = 0;
+    bool is_speaking_ = false;
     AudioCodec* codec_ = nullptr;
     std::string last_detected_wake_word_;
 
@@ -59,6 +66,7 @@ private:
     // 保护 afe_data_ 的 Feed / GetFeedSize / destroy；fetch 用 fetching_ 与 destroy 握手。
     std::mutex afe_mutex_;
     std::atomic<bool> fetching_{false};
+    uint32_t barge_in_rms_baseline_ = 100;
 
     void StoreWakeWordData(const int16_t* data, size_t size);
     void AudioDetectionTask();

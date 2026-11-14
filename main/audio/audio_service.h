@@ -76,6 +76,7 @@ struct AudioTask {
     AudioTaskType type;
     std::vector<int16_t> pcm;
     uint32_t timestamp;
+    uint32_t generation = 0;
 };
 
 struct DebugStatistics {
@@ -126,6 +127,13 @@ public:
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
+    void AbortPlaybackGeneration();
+    uint32_t GetPlaybackGeneration() const {
+        return playback_generation_.load(std::memory_order_relaxed);
+    }
+    void SetBargeInVad(bool enable,
+                       std::function<void()> on_detected = nullptr,
+                       bool flush_preroll = false);
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
     void ResetDecoder();
@@ -160,6 +168,7 @@ private:
     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
     // 服务端 AEC：下行播放时间戳 FIFO，逐个分配给上行帧（v2 帧头）
     std::deque<uint32_t> timestamp_queue_;
+    std::atomic<uint32_t> playback_generation_{0};
 
     bool wake_word_initialized_ = false;
     bool audio_processor_initialized_ = false;
