@@ -1277,7 +1277,7 @@ void UpdateHomeStatusBar(HomeStatusState* st);
 
 int GetSavedNetworkType() {
     // 与 DualNetworkBoard / network_screen 共用 NVS 读取逻辑
-    constexpr int kDefaultNetType = 0;  // 默认 WiFi；整包刷机会清空 NVS，避免回落到 4G 卡住
+    constexpr int kDefaultNetType = 1;  // 默认内置 4G
     const NetworkType type =
         DualNetworkBoard::LoadNetworkTypeFromSettings(kDefaultNetType);
     return type == NetworkType::ML307 ? 1 : 0;
@@ -1287,7 +1287,7 @@ int GetSavedNetworkType() {
 // 返回 0 = 外置卡（默认）/ 1 = 内置卡。
 int GetSavedSimSlot() {
     Settings settings("network", true);
-    int v = settings.GetInt("sim_slot", 0);
+    int v = settings.GetInt("sim_slot", 1);
     return (v == 1) ? 1 : 0;
 }
 

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <memory>
 #include <string>
 #include <utility>
@@ -69,6 +70,10 @@ struct RequestResult {
     int index = 0;
 };
 
+struct ResumeChatContext {
+    uint32_t session = 0;
+};
+
 EnglishUi s_ui;
 lv_obj_t* s_bound_screen = nullptr;
 lv_obj_t* s_return_screen = nullptr;
@@ -78,6 +83,12 @@ std::string s_current_task_id;
 size_t s_current_index = 0;
 uint8_t s_stage = 0;
 bool s_in_review = false;
+bool s_tasks_cached = false;
+time_t s_tasks_cached_at = 0;
+std::string s_review_cached_task_id;
+EnglishReview s_review_cached;
+time_t s_review_cached_at = 0;
+bool s_restore_chat_on_unload = false;
 std::atomic<bool> s_screen_active{false};
 std::atomic<bool> s_busy{false};
 std::atomic<uint32_t> s_session{0};
@@ -98,6 +109,18 @@ void SetStatus(const char* text) {
     if (s_ui.status != nullptr) {
         lv_label_set_text(s_ui.status, text != nullptr ? text : "");
     }
+}
+
+bool TasksCacheFresh() {
+    return s_tasks_cached && !s_tasks.empty() &&
+           std::time(nullptr) - s_tasks_cached_at < 60;
+}
+
+bool ReviewCacheFresh(const std::string& task_id) {
+    return !s_review_cached_task_id.empty() &&
+           s_review_cached_task_id == task_id &&
+           !s_review_cached.entries.empty() &&
+           std::time(nullptr) - s_review_cached_at < 600;
 }
 
 void ResetContentRefs() {
@@ -165,6 +188,7 @@ void StartReviewWorker(const std::string& task_id);
 void StartSubmitWorker(const std::string& result);
 void BuildTaskList();
 void BuildReview();
+void ResumeChatAfterVoiceUiDrain(uint32_t session);
 
 void ShowCenteredMessage(const char* text, bool show_back_button) {
     ResetContentRefs();
@@ -381,6 +405,8 @@ void PostRequestResult(RequestResult* result) {
                 switch (resolved->kind) {
                     case RequestKind::Tasks:
                         s_tasks = std::move(resolved->tasks);
+                        s_tasks_cached = true;
+                        s_tasks_cached_at = std::time(nullptr);
                         BuildTaskList();
                         SetStatus(s_tasks.empty()
                                       ? I18n::T("还未收到任务")
@@ -391,6 +417,9 @@ void PostRequestResult(RequestResult* result) {
                         s_current_task_id = resolved->task_id;
                         s_current_index = 0;
                         s_stage = 0;
+                        s_review_cached_task_id = resolved->task_id;
+                        s_review_cached = s_review;
+                        s_review_cached_at = std::time(nullptr);
                         BuildReview();
                         if (s_review.entries.empty()) {
                             SetStatus(I18n::T("暂无复习短句"));
@@ -507,6 +536,34 @@ void StartSubmitWorker(const std::string& result) {
     }
 }
 
+void ResumeChatAfterVoiceUiDrain(uint32_t session) {
+    auto* context = new ResumeChatContext{};
+    context->session = session;
+    if (xTaskCreate(
+            [](void* arg) {
+                std::unique_ptr<ResumeChatContext> resume(
+                    static_cast<ResumeChatContext*>(arg));
+                vTaskDelay(pdMS_TO_TICKS(80));
+                if (resume->session == CurrentSession()) {
+                    lv_async_call(
+                        [](void* data) {
+                            auto* deferred =
+                                static_cast<ResumeChatContext*>(data);
+                            if (deferred->session == CurrentSession()) {
+                                ChatScreen::ResumeAfterTemporaryLeave();
+                            }
+                            delete deferred;
+                        },
+                        resume.release());
+                }
+                vTaskDelete(nullptr);
+            },
+            "english_resume", 3072, context, 4, nullptr) != pdPASS) {
+        delete context;
+        ChatScreen::ResumeAfterTemporaryLeave();
+    }
+}
+
 void OnTaskClicked(lv_event_t* event) {
     const auto index = static_cast<size_t>(reinterpret_cast<uintptr_t>(
         lv_event_get_user_data(event)));
@@ -516,6 +573,14 @@ void OnTaskClicked(lv_event_t* event) {
     s_review = EnglishReview{};
     s_current_index = 0;
     s_stage = 0;
+    if (ReviewCacheFresh(s_tasks[index].id)) {
+        s_review = s_review_cached;
+        s_current_task_id = s_tasks[index].id;
+        BuildReview();
+        SetStatus(s_review.label.empty() ? I18n::T("轻触卡片翻面")
+                                          : s_review.label.c_str());
+        return;
+    }
     ShowCenteredMessage(I18n::T("正在加载复习内容..."), false);
     SetStatus(I18n::T("正在加载复习内容..."));
     StartReviewWorker(s_tasks[index].id);
@@ -555,10 +620,8 @@ void ReturnHome() {
     if (target == nullptr || target == old_screen) {
         target = HomeScreen::Create();
     }
+    s_restore_chat_on_unload = target == ChatScreen::CurrentScreen();
     lv_screen_load(target);
-    if (target == ChatScreen::CurrentScreen()) {
-        ChatScreen::ResumeAfterTemporaryLeave();
-    }
     if (old_screen != nullptr && old_screen != target) {
         lv_obj_delete_async(old_screen);
     }
@@ -582,13 +645,16 @@ void OnScreenUnloaded(lv_event_t* event) {
     s_busy.store(false, std::memory_order_release);
     s_session.fetch_add(1, std::memory_order_acq_rel);
     s_request_generation.fetch_add(1, std::memory_order_acq_rel);
-    s_tasks.clear();
     s_review = EnglishReview{};
     s_current_task_id.clear();
     s_current_index = 0;
     s_stage = 0;
     s_in_review = false;
     s_ui = EnglishUi{};
+    if (s_restore_chat_on_unload) {
+        s_restore_chat_on_unload = false;
+        ResumeChatAfterVoiceUiDrain(CurrentSession());
+    }
 }
 
 void BuildHeader(lv_obj_t* screen) {
@@ -634,12 +700,12 @@ lv_obj_t* EnglishScreen::Create(lv_obj_t* return_screen) {
     s_ui = EnglishUi{};
     s_ui.screen = screen;
     s_return_screen = return_screen;
-    s_tasks.clear();
     s_review = EnglishReview{};
     s_current_task_id.clear();
     s_current_index = 0;
     s_stage = 0;
     s_in_review = false;
+    s_restore_chat_on_unload = false;
 
     BuildHeader(screen);
 
@@ -680,15 +746,23 @@ void EnglishScreen::LifecycleCallback(screen_lifecycle_event_t event) {
         s_busy.store(false, std::memory_order_release);
         s_session.fetch_add(1, std::memory_order_acq_rel);
         s_request_generation.fetch_add(1, std::memory_order_acq_rel);
-        s_tasks.clear();
+        if (!TasksCacheFresh()) {
+            s_tasks.clear();
+        }
         s_review = EnglishReview{};
         s_current_task_id.clear();
         s_current_index = 0;
         s_stage = 0;
         s_in_review = false;
         BuildTaskList();
-        SetStatus(I18n::T("正在加载任务..."));
-        StartTasksWorker();
+        if (TasksCacheFresh()) {
+            SetStatus(I18n::T("选择任务开始复习"));
+        } else {
+            SetStatus(I18n::T("正在加载任务..."));
+        }
+        if (!TasksCacheFresh()) {
+            StartTasksWorker();
+        }
     } else {
         ESP_LOGI(TAG, "unload: english_screen");
         s_screen_active.store(false, std::memory_order_release);

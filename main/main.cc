@@ -14,6 +14,7 @@
 
 #include "application.h"
 #include "i18n.h"
+#include "settings.h"
 #include "system_info.h"
 
 #define TAG "main"
@@ -83,6 +84,19 @@ extern "C" void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    {
+        Settings network_settings("network", true);
+        const int32_t version_marker =
+            network_settings.GetInt("4g_default", 0);
+        if (version_marker != 2) {
+            ESP_LOGI(TAG, "Migrating default network to internal 4G");
+            network_settings.SetInt("type", 1);
+            network_settings.SetInt("sim_slot", 1);
+            network_settings.SetInt("4g_default", 2);
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+    }
 
     // UI locale from NVS (must run before first screen create).
     I18n::Init();

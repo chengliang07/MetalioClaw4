@@ -52,6 +52,7 @@ public:
     virtual ~Nt26Board();
     virtual std::string GetBoardType() override;
     virtual void StartNetwork() override;
+    virtual bool IsNetworkReady() const override;
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) override;
     virtual NetworkInterface* GetNetwork() override;
     virtual void SetPowerSaveMode(bool enabled) override;

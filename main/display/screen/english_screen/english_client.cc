@@ -17,7 +17,7 @@ constexpr const char* TAG = "EnglishClient";
 constexpr const char* kSettingsNs = "podcast";
 constexpr const char* kKeyDeviceToken = "device_token";
 constexpr const char* kRequiredApiBase = "https://www.yi-edu.com";
-constexpr int kHttpTimeoutMs = 15000;
+constexpr int kHttpTimeoutMs = 8000;
 
 std::mutex s_http_mutex;
 
@@ -86,7 +86,7 @@ bool HttpRequest(const char* method, const std::string& url,
 
     http->SetTimeout(kHttpTimeoutMs);
     http->SetHeader("Accept", "application/json");
-    http->SetHeader("Connection", "close");
+    http->SetHeader("Connection", "keep-alive");
     http->SetHeader("Authorization", "Bearer " + device_token);
     if (!content.empty()) {
         http->SetHeader("Content-Type", "application/json");

@@ -50,6 +50,11 @@ void DualNetworkBoard::SaveNetworkTypeToSettings(NetworkType type) {
     settings.SetInt("type", network_type);
 }
 
+void DualNetworkBoard::MarkCellularFallbackUsed() {
+    Settings settings("network", true);
+    settings.SetInt("4g_fallback", 2);
+}
+
 void DualNetworkBoard::InitializeCurrentBoard() {
     if (network_type_ == NetworkType::ML307) {
         ESP_LOGI(TAG, "Initialize ML307 board");

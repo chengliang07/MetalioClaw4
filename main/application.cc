@@ -6,6 +6,7 @@
 #include "mqtt_protocol.h"
 #include "websocket_protocol.h"
 #include "assets/lang_config.h"
+#include "dual_network_board.h"
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
@@ -544,6 +545,21 @@ void Application::Start() {
 
     /* Wait for the network to be ready */
     board.StartNetwork();
+
+    auto* dual_network = dynamic_cast<DualNetworkBoard*>(&board);
+    if (dual_network != nullptr &&
+        dual_network->GetNetworkType() == NetworkType::ML307 &&
+        !dual_network->IsCurrentNetworkReady()) {
+        Settings settings("network", true);
+        if (settings.GetInt("4g_fallback", 0) != 2) {
+            ESP_LOGW(TAG, "Cellular network unavailable, fallback to WiFi once");
+            DualNetworkBoard::MarkCellularFallbackUsed();
+            settings.SetInt("type", 0);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
+        }
+    }
+
     // lwIP 就绪后再启用 UDP 诊断通道（提前创建 socket 会导致启动崩溃）
     // kSelfAecDelayMs 为自供 AEC 参考延迟，由 SetDeviceState 在播放时设置
     DiagLogEnableUdp(true);

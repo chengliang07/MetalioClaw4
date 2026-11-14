@@ -57,9 +57,16 @@ public:
     
     // 获取当前网络类型
     NetworkType GetNetworkType() const { return network_type_; }
+
+    // 4G 启动失败后只允许回退一次，避免循环重启；供 Application 设置标记。
+    static void MarkCellularFallbackUsed();
     
     // 获取当前活动的板卡引用
     Board& GetCurrentBoard() const { return *current_board_; }
+
+    bool IsCurrentNetworkReady() const {
+        return current_board_ != nullptr && current_board_->IsNetworkReady();
+    }
     
     // 重写Board接口
     virtual std::string GetBoardType() override;
@@ -71,4 +78,4 @@ public:
     virtual std::string GetDeviceStatusJson() override;
 };
 
-#endif // DUAL_NETWORK_BOARD_H 
+#endif // DUAL_NETWORK_BOARD_H

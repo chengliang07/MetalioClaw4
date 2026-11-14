@@ -6,6 +6,7 @@
 #include <esp_log.h>
 #include <font_awesome.h>
 #include <cJSON.h>
+#include <atomic>
 #include "board.h"
 
 #define TAG "Nt26Board"
@@ -18,6 +19,7 @@ constexpr uint32_t kWaitNetworkInFlight = (1 << 2);
 constexpr uint32_t kWaitNetworkAll =
     kWaitNetworkConnected | kWaitNetworkFailed | kWaitNetworkInFlight;
 constexpr uint32_t kNetworkWaitTimeoutMs = 60 * 1000;
+std::atomic<bool> s_network_ready{false};
 
 }  // namespace
 
@@ -87,6 +89,7 @@ void Nt26Board::OnNetworkReadyTimeout(void* arg) {
 
 void Nt26Board::StartNetwork() {
     OnNetworkEvent(NetworkEvent::ModemDetecting);
+    s_network_ready.store(false, std::memory_order_release);
 
     UartEthModem::Config config = {
         .uart_num = UART_NUM_1,
@@ -112,6 +115,7 @@ void Nt26Board::StartNetwork() {
         switch (event) {
             case UartEthModem::UartEthModemEvent::Connected:
             {
+                s_network_ready.store(true, std::memory_order_release);
                 esp_timer_stop(network_ready_timer_);
                 if (network_wait_event_) {
                     xEventGroupSetBits(network_wait_event_, kWaitNetworkConnected);
@@ -193,6 +197,10 @@ void Nt26Board::StartNetwork() {
     }
 
     ESP_LOGW(TAG, "Network wait failed or timed out (bits=0x%lx)", (unsigned long)bits);
+}
+
+bool Nt26Board::IsNetworkReady() const {
+    return s_network_ready.load(std::memory_order_acquire);
 }
 
 void Nt26Board::ScheduleAsyncStop() {

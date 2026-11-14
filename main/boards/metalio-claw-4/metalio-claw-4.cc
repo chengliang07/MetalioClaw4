@@ -597,9 +597,9 @@ private:
     void InitializeNoLCD() { display_ = new NoDisplay(); }
 
 public:
-    // 默认 WiFi：整包刷机会清空 NVS，若默认 4G 会先初始化蜂窝模组并卡住，
-    // 且与首页/网络页的 WiFi 默认值不一致。
-    METALIO_CLAW_4() : DualNetworkBoard(NT26_TX_PIN, NT26_RX_PIN, NT26_MRDY_PIN, NT26_SRDY_PIN, 0) {
+    // 默认内置 4G：避免整包刷机后仍要手动输入 WiFi。蜂窝启动失败由
+    // Application 只回退一次到 WiFi，避免旧版 4G 启动循环卡死。
+    METALIO_CLAW_4() : DualNetworkBoard(NT26_TX_PIN, NT26_RX_PIN, NT26_MRDY_PIN, NT26_SRDY_PIN, 1) {
         InitializeI2C();
 
         InitializeIOExpander();

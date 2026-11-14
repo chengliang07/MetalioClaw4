@@ -1279,7 +1279,10 @@ void ChatScreen::ResumeAfterTemporaryLeave() {
         return;
     }
     // 本页没有被卸载，不会触发 LIFE_CYCLE_LOAD，必须显式恢复语音会话。
+    s_voice_ui_held = false;
     schedule_voice_ui_start();
+    Application::GetInstance().SetVoiceUiDesired(false);
+    Application::GetInstance().SetVoiceUiDesired(true);
     RefreshDeviceState();
 }
 
