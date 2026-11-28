@@ -57,7 +57,7 @@ def draw_head(c: PixelCanvas, fill: tuple[int, int, int]) -> None:
     # 奶油色脸盘
     c.sphere(26.0, 33.0, 15.5, 14.0, "cream", "cream_light", "cream_dark")
     c.sphere(46.0, 33.0, 15.5, 14.0, "cream", "cream_light", "cream_dark")
-    c.ellipse(36.0, 39.0, 9.0, 7.0, "cream")
+    c.sphere(36.0, 44.0, 12.0, 10.5, "cream", "cream_light", "cream_dark")
     c.ellipse(30.0, 9.0, 8.0, 2.6, lighter(fill, 1.35))
 
 
