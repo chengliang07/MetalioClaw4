@@ -201,7 +201,8 @@ def draw_head(c: PixelCanvas) -> None:
     # 面部奶油色圆盘：同样的三档明暗，让脸盘从头上浮起来
     c.sphere(26.0, 33.0, 15.5, 14.0, "cream", "cream_light", "cream_dark")
     c.sphere(46.0, 33.0, 15.5, 14.0, "cream", "cream_light", "cream_dark")
-    c.ellipse(36.0, 39.0, 9.0, 7.0, "cream")
+    # 下巴也要是奶油色，否则嘴以下会变成一整块棕色像戴了口罩
+    c.sphere(36.0, 44.0, 12.0, 10.5, "cream", "cream_light", "cream_dark")
     # 顶部高光块
     c.ellipse(30.0, 9.0, 8.0, 2.6, "brown_light")
 
