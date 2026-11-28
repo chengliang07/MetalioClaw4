@@ -1455,6 +1455,7 @@ void OnStopClicked(lv_event_t* /*event*/) {
 }
 
 void ReturnHome() {
+    const int64_t started_us = esp_timer_get_time();
     s_session.fetch_add(1, std::memory_order_acq_rel);
     s_request_generation.fetch_add(1, std::memory_order_acq_rel);
     s_prefetch_generation.fetch_add(1, std::memory_order_acq_rel);
@@ -1487,6 +1488,8 @@ void ReturnHome() {
     if (old_screen != nullptr && old_screen != target) {
         lv_obj_delete_async(old_screen);
     }
+    ESP_LOGI(TAG, "[timing] return home dt=%dms",
+             static_cast<int>((esp_timer_get_time() - started_us) / 1000));
 }
 
 // 播放中先停回节目列表，列表页再点才离开播客页。
@@ -1756,6 +1759,7 @@ void PodcastScreen::LifecycleCallback(screen_lifecycle_event_t event) {
         }
     } else {
         ESP_LOGI(TAG, "unload: podcast_screen");
+        const int64_t started_us = esp_timer_get_time();
         s_screen_active.store(false, std::memory_order_release);
         s_session.fetch_add(1, std::memory_order_acq_rel);
         s_request_generation.fetch_add(1, std::memory_order_acq_rel);
@@ -1764,7 +1768,10 @@ void PodcastScreen::LifecycleCallback(screen_lifecycle_event_t event) {
         s_download_running.store(false, std::memory_order_release);
         s_playback_active.store(false, std::memory_order_release);
         PodcastPlayer::SetEventCallback(nullptr, nullptr);
-        // 等收尾完成再离开：否则立刻再进来点第一集会报“播放器正忙”。
-        PodcastPlayer::StopAndWait(4000);
+        // 这里曾等 4 秒收尾，返回键直接卡住。播放器摘除是同步完成的，
+        // 后台 stop 收尾由新一次点播的开始任务自己等；这里只给 200ms 让常见情况干净退出。
+        PodcastPlayer::StopAndWait(200);
+        ESP_LOGI(TAG, "[timing] unload done dt=%dms",
+                 static_cast<int>((esp_timer_get_time() - started_us) / 1000));
     }
 }
