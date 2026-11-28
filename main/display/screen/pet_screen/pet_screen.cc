@@ -30,6 +30,8 @@ constexpr int32_t kPanelSize = 720;
 constexpr uint32_t kColorBg = 0x0B1020;
 constexpr uint32_t kColorText = 0xF8FAFC;
 constexpr uint32_t kColorSubtle = 0x94A3B8;
+// 语音链路真正安静这么久之后，才在对话框里提示唤醒词。
+constexpr uint32_t kWakeHintQuietMs = 12000;
 
 enum class RequestKind : uint8_t { Load };
 
@@ -755,6 +757,10 @@ void OnVoiceTick(lv_timer_t* /*timer*/) {
     if (!s_screen_active.load(std::memory_order_relaxed)) {
         return;
     }
+    // 有声音在放就说明会话还活着（比如工具调用期间状态会短暂回 Idle）。
+    if (!Application::GetInstance().GetAudioService().IsIdle()) {
+        s_last_active_ms = lv_tick_get();
+    }
     RefreshVoiceUi();
 }
 
@@ -804,6 +810,10 @@ void UpdateBubble() {
         SetSubtitle(I18n::T("我在听，请说"), kColorSubtle);
         return;
     }
+    if (s_voice_state == kDeviceStateSpeaking) {
+        // 说话中不要抢字幕：回复文本由 ShowAssistantText 直接写入。
+        return;
+    }
     if (s_bubble_reply) {
         if (static_cast<int32_t>(lv_tick_get() - s_reply_until_ms) < 0) {
             return;  // 回答还在展示期，别覆盖
@@ -820,6 +830,10 @@ void UpdateBubble() {
             SetSubtitle(mood, kColorText);
             return;
         }
+    }
+    // 唤醒提示只在真正安静下来之后才出现，避免会话中间的 Idle 闪一下。
+    if (lv_tick_elaps(s_last_active_ms) < kWakeHintQuietMs) {
+        return;
     }
     SetSubtitle(I18n::T("说「你好一丢」唤醒我"), kColorSubtle);
 }
@@ -1760,7 +1774,9 @@ void PetScreen::LifecycleCallback(screen_lifecycle_event_t event) {
         s_busy.store(false, std::memory_order_release);
         s_session.fetch_add(1, std::memory_order_acq_rel);
         s_request_generation.fetch_add(1, std::memory_order_acq_rel);
-        s_last_active_ms = lv_tick_get();
+        // 进页时就把“安静计时”清零，唤醒提示可以立刻出现；
+        // 一旦真的开始对话，时间戳会被语音事件刷新。
+        s_last_active_ms = lv_tick_get() - kWakeHintQuietMs;
         s_has_transient = false;
         s_has_pending_reaction = false;
         StartIdleTimer();
@@ -1803,6 +1819,7 @@ void PetScreen::ShowAssistantText(const char* text) {
     s_status_text.clear();
     s_bubble_reply = true;
     s_reply_until_ms = lv_tick_get() + 9000;
+    s_last_active_ms = lv_tick_get();
     // 回答内容决定说话结束后播哪个表情（开心 / 好奇 / 思考 / 庆祝 / 犯困）。
     NoteAssistantText(text);
 }
